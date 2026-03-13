@@ -179,6 +179,7 @@ class Enemy extends Entity {
     this.knockbackNx = 0;
     this.knockbackNy = 0;
     this.fireballCooldown = 0; // used in room where demons shoot
+    this.dropsHearts = false;  // only one enemy per room is set to true in setupEnemies
   }
 
   draw() {
@@ -434,6 +435,8 @@ function setupRoomObstacles() {
   add(0, 80, 260, 26); add(0, 106, 260, 26); add(0, 132, 260, 26); add(0, 158, 260, 26); // cluster left
   add(0, 560, 260, 28); add(0, 588, 260, 28); add(0, 616, 260, 28); // cluster right
   add(0, 260, 80, 26); add(0, 286, 80, 26); add(0, 312, 80, 26); add(0, 338, 80, 26); add(0, 364, 80, 26); // cluster top
+  add(0, 55, 55, 24); add(0, 79, 55, 24); add(0, 103, 55, 24); // corner cluster
+  add(0, 537, 55, 24); add(0, 561, 55, 24); add(0, 585, 55, 24); // corner cluster
 
   // Room 1
   add(1, 100, 120, 30); add(1, 130, 120, 30); add(1, 160, 120, 30); add(1, 190, 120, 30); // block of 4
@@ -443,6 +446,8 @@ function setupRoomObstacles() {
   add(1, 280, 380, 26); add(1, 306, 380, 26); add(1, 332, 380, 26); add(1, 358, 380, 26); // block of 4
   add(1, 60, 260, 28); add(1, 88, 260, 28); add(1, 116, 260, 28); add(1, 144, 260, 28); // cluster left
   add(1, 260, 60, 26); add(1, 286, 60, 26); add(1, 312, 60, 26); add(1, 338, 60, 26); // cluster top
+  add(1, 55, 420, 24); add(1, 79, 420, 24); add(1, 103, 420, 24); add(1, 127, 420, 24); // corner
+  add(1, 537, 420, 24); add(1, 561, 420, 24); add(1, 585, 420, 24); // corner
 
   // Room 2
   add(2, 80, 80, 28); add(2, 108, 80, 28); add(2, 136, 80, 28); add(2, 164, 80, 28); add(2, 192, 80, 28); // block of 5
@@ -452,6 +457,8 @@ function setupRoomObstacles() {
   add(2, 340, 260, 28); add(2, 368, 260, 28); add(2, 396, 260, 28); add(2, 424, 260, 28); // block of 4
   add(2, 80, 260, 26); add(2, 106, 260, 26); add(2, 132, 260, 26); add(2, 158, 260, 26); // cluster left
   add(2, 580, 260, 28); add(2, 608, 260, 28); add(2, 622, 260, 28); // cluster right
+  add(2, 55, 55, 24); add(2, 79, 55, 24); add(2, 103, 55, 24); add(2, 127, 55, 24); // corner
+  add(2, 55, 425, 24); add(2, 79, 425, 24); add(2, 103, 425, 24); // corner
 
   // Room 3
   add(3, 120, 200, 30); add(3, 150, 200, 30); add(3, 180, 200, 30); add(3, 210, 200, 30); add(3, 240, 200, 30); // block of 5
@@ -461,6 +468,8 @@ function setupRoomObstacles() {
   add(3, 350, 140, 26); add(3, 376, 140, 26); add(3, 402, 140, 26); add(3, 428, 140, 26); // block of 4
   add(3, 60, 280, 28); add(3, 88, 280, 28); add(3, 116, 280, 28); add(3, 144, 280, 28); // cluster left
   add(3, 280, 400, 26); add(3, 306, 400, 26); add(3, 332, 400, 26); add(3, 358, 400, 26); // cluster bottom
+  add(3, 55, 55, 24); add(3, 79, 55, 24); add(3, 103, 55, 24); // corner
+  add(3, 537, 425, 24); add(3, 561, 425, 24); add(3, 585, 425, 24); // corner
 
   // Room 4 – more blocks
   add(4, 140, 100, 28); add(4, 168, 100, 28); add(4, 196, 100, 28); add(4, 224, 100, 28); add(4, 252, 100, 28); add(4, 280, 100, 28); // block of 6
@@ -470,6 +479,8 @@ function setupRoomObstacles() {
   add(4, 280, 220, 28); add(4, 308, 220, 28); add(4, 336, 220, 28); add(4, 364, 220, 28); add(4, 392, 220, 28); // block of 5
   add(4, 80, 200, 26); add(4, 106, 200, 26); add(4, 132, 200, 26); add(4, 158, 200, 26); // cluster left
   add(4, 560, 280, 28); add(4, 588, 280, 28); add(4, 616, 280, 28); // cluster right
+  add(4, 55, 55, 24); add(4, 79, 55, 24); add(4, 103, 55, 24); add(4, 127, 55, 24); // corner
+  add(4, 55, 425, 24); add(4, 79, 425, 24); add(4, 103, 425, 24); // corner
 
   // Room 5
   add(5, 80, 120, 30); add(5, 110, 120, 30); add(5, 140, 120, 30); add(5, 170, 120, 30); add(5, 200, 120, 30); add(5, 230, 120, 30); // block of 6
@@ -479,6 +490,8 @@ function setupRoomObstacles() {
   add(5, 320, 380, 26); add(5, 346, 380, 26); add(5, 372, 380, 26); add(5, 398, 380, 26); add(5, 424, 380, 26); // block of 5
   add(5, 60, 260, 28); add(5, 88, 260, 28); add(5, 116, 260, 28); add(5, 144, 260, 28); // cluster left
   add(5, 260, 60, 26); add(5, 286, 60, 26); add(5, 312, 60, 26); add(5, 338, 60, 26); add(5, 364, 60, 26); // cluster top
+  add(5, 55, 420, 24); add(5, 79, 420, 24); add(5, 103, 420, 24); // corner
+  add(5, 537, 55, 24); add(5, 561, 55, 24); add(5, 585, 55, 24); add(5, 609, 55, 24); // corner
 
   // Room 6
   add(6, 100, 80, 28); add(6, 128, 80, 28); add(6, 156, 80, 28); add(6, 184, 80, 28); add(6, 212, 80, 28); add(6, 240, 80, 28); // block of 6
@@ -489,6 +502,8 @@ function setupRoomObstacles() {
   add(6, 80, 200, 26); add(6, 106, 200, 26); add(6, 132, 200, 26); add(6, 158, 200, 26); add(6, 184, 200, 26); // cluster left
   add(6, 580, 300, 28); add(6, 608, 300, 28); add(6, 636, 300, 28); // cluster right
   add(6, 260, 60, 26); add(6, 286, 60, 26); add(6, 312, 60, 26); add(6, 338, 60, 26); // cluster top
+  add(6, 55, 55, 24); add(6, 79, 55, 24); add(6, 103, 55, 24); // corner
+  add(6, 537, 425, 24); add(6, 561, 425, 24); add(6, 585, 425, 24); // corner
 
   // Room 7 = BOSS_ROOM: no blocks
 }
@@ -566,6 +581,12 @@ function setupEnemies() {
 
   // Room 7: BOSS only (no regular enemies), center of room, no blocks in this room
   enemies.push(new Boss(ROOM_MARGIN_X + ROOM_WIDTH / 2, ROOM_MARGIN_Y + ROOM_HEIGHT / 2, BOSS_ROOM));
+
+  // Exactly one enemy per room (0–6) drops hearts when killed; the rest do not
+  for (let roomId = 0; roomId <= 6; roomId++) {
+    const firstInRoom = enemies.find((e) => e.roomId === roomId && !e.isBoss);
+    if (firstInRoom) firstInRoom.dropsHearts = true;
+  }
 }
 
 // Room-local positions for "far side" of room (opposite the door the player entered). Five slots per entry for 4–6 enemies.
@@ -645,6 +666,7 @@ function resetGame() {
   projectiles = [];
   enemyProjectiles = [];
   deathScatterParticles = [];
+  heartPickups = [];
   isGameOver = false;
   victory = false;
   overlayEl.classList.add("hidden");
@@ -852,7 +874,7 @@ function performSwordAttack() {
       enemy.hitFlashTimer = 6;
       if (enemy.hp <= 0) {
         spawnDeathScatter(enemy.x, enemy.y, enemy.roomId);
-        if (!enemy.isBoss) {
+        if (!enemy.isBoss && enemy.dropsHearts) {
           const count = enemy.size === ENEMY_ELITE_SIZE ? 2 : 1;
           spawnHeartPickups(enemy.x, enemy.y, enemy.roomId, count);
         }
@@ -1203,7 +1225,7 @@ function updateProjectiles() {
         spawnExplosion(p.x, p.y);
         if (enemy.hp <= 0) {
           spawnDeathScatter(enemy.x, enemy.y, enemy.roomId);
-          if (!enemy.isBoss) {
+          if (!enemy.isBoss && enemy.dropsHearts) {
             const count = enemy.size === ENEMY_ELITE_SIZE ? 2 : 1;
             spawnHeartPickups(enemy.x, enemy.y, enemy.roomId, count);
           }
@@ -1247,6 +1269,19 @@ function updateEnemyProjectiles() {
     }
   });
   enemyProjectiles = enemyProjectiles.filter((p) => p.alive);
+}
+
+function updateHeartPickups() {
+  heartPickups = heartPickups.filter((h) => {
+    if (h.roomId !== player.currentRoom) return true;
+    const dx = player.x - h.x, dy = player.y - h.y;
+    if (Math.hypot(dx, dy) < player.boundsHalfW + HEART_PICKUP_R) {
+      player.hp = Math.min(PLAYER_MAX_HP, player.hp + 1);
+      updateHUD();
+      return false; // remove heart
+    }
+    return true;
+  });
 }
 
 function checkWinCondition() {
@@ -1416,6 +1451,19 @@ function drawEnemies() {
   });
 }
 
+function drawHeartPickups() {
+  heartPickups.forEach((h) => {
+    if (h.roomId !== player.currentRoom) return;
+    ctx.fillStyle = "#c62828";
+    ctx.beginPath();
+    ctx.arc(h.x, h.y, HEART_PICKUP_R - 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#8b0000";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  });
+}
+
 function drawEnemyProjectiles() {
   enemyProjectiles.forEach((p) => {
     if (p.roomId !== player.currentRoom || !p.alive) return;
@@ -1467,6 +1515,7 @@ function gameLoop() {
     updateEnemies();
     updateProjectiles();
     updateEnemyProjectiles();
+    updateHeartPickups();
     updateExplosions();
     updateDeathScatter();
     checkWinCondition();
@@ -1475,6 +1524,7 @@ function gameLoop() {
   drawRoomBackground();
   drawObstacles();
   drawEnemies();
+  drawHeartPickups();
   drawDeathScatter();
   drawEnemyProjectiles();
   drawProjectiles();
