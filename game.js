@@ -19,19 +19,32 @@ const ROOM_MARGIN_Y = (canvas.height - ROOM_HEIGHT) / 2;
 const PLAYER_SPEED = 2.4;
 const PLAYER_SIZE = 24;
 const PLAYER_MAX_HP = 10;
+// Bounds for room/obstacle collision (match visible sprite: 48px wide, ~72px tall)
+const PLAYER_BOUNDS_HALF_WIDTH = 24;
+const PLAYER_BOUNDS_HALF_HEIGHT = 36;
+const KNOCKBACK_DISTANCE_EACH = 60;   // 120px total separation
+const KNOCKBACK_SPEED_PER_FRAME = 4;  // pixels per frame (slower push)
 
 const ENEMY_SIZE = 24;
 const ENEMY_MAX_HP = 10;
+const ENEMY_ELITE_SIZE = 48;   // twice as big
+const ENEMY_ELITE_HP = 20;     // twice as strong (HP)
+const ENEMY_ELITE_DAMAGE = 2;  // deal 2 hearts on contact
 const ENEMY_SPEED = 1.0;
+const ROOM_DEMONS_SHOOT_FIREBALLS = 2; // room index where demons throw slow fireballs
+const ENEMY_FIREBALL_SPEED = 1.2;
+const ENEMY_FIREBALL_COOLDOWN = 90;   // frames between shots per demon
+const ENEMY_FIREBALL_SIZE = 8;
+const ENEMY_FIREBALL_DAMAGE = 1;
 
 const FIREBALL_SPEED = 5;
 const FIREBALL_SIZE = 10;
 // Damage values & sword geometry
 const FIREBALL_DAMAGE = 5; // each fireball hit
 const SWORD_DAMAGE = 10;   // each sword hit
-const SWORD_RANGE = PLAYER_SIZE; // sword length roughly equals player size
+const SWORD_RANGE = PLAYER_SIZE * 2; // sword length roughly twice player size
 const SWORD_ARC = Math.PI / 2;   // 180° total swing (±90° from facing)
-const SWORD_SWING_DURATION = 12; // frames for full swing animation
+const SWORD_SWING_DURATION = 15; // frames for full swing animation (20% slower than before)
 
 const WEAPON_FIREBALL = "fireball";
 const WEAPON_SWORD = "sword";
@@ -73,15 +86,18 @@ const heroAnim = {
   frameInterval: 8, // frames between animation steps
 };
 
-// 2x2 grid of rooms: indices 0..3
-// layout:
-// [0] [1]
-// [2] [3]
+// 2x4 grid of rooms: indices 0..7
+// [0] [1] [2] [3]
+// [4] [5] [6] [7]
 const ROOMS = [
-  { id: 0, neighbors: { right: 1, down: 2 } },
-  { id: 1, neighbors: { left: 0, down: 3 } },
-  { id: 2, neighbors: { up: 0, right: 3 } },
-  { id: 3, neighbors: { up: 1, left: 2 } },
+  { id: 0, neighbors: { right: 1, down: 4 } },
+  { id: 1, neighbors: { left: 0, right: 2, down: 5 } },
+  { id: 2, neighbors: { left: 1, right: 3, down: 6 } },
+  { id: 3, neighbors: { left: 2, down: 7 } },
+  { id: 4, neighbors: { up: 0, right: 5 } },
+  { id: 5, neighbors: { up: 1, left: 4, right: 6 } },
+  { id: 6, neighbors: { up: 2, left: 5, right: 7 } },
+  { id: 7, neighbors: { up: 3, left: 6 } },
 ];
 
 let keys = {};
@@ -113,11 +129,16 @@ class Player extends Entity {
   constructor(x, y) {
     super(x, y, PLAYER_SIZE, "#4caf50");
     this.hp = PLAYER_MAX_HP;
+    this.boundsHalfW = PLAYER_BOUNDS_HALF_WIDTH;
+    this.boundsHalfH = PLAYER_BOUNDS_HALF_HEIGHT;
     this.weapon = WEAPON_FIREBALL;
     this.facingAngle = 0; // radians
     this.currentRoom = 0;
     this.attackCooldown = 0;
     this.swordSwingTimer = 0; // counts down while sword is visually swinging
+    this.knockbackRemaining = 0;
+    this.knockbackNx = 0;
+    this.knockbackNy = 0;
   }
 
   reset(x, y, roomId) {
@@ -129,15 +150,25 @@ class Player extends Entity {
     this.currentRoom = roomId;
     this.attackCooldown = 0;
     this.swordSwingTimer = 0;
+    this.knockbackRemaining = 0;
+    this.knockbackNx = 0;
+    this.knockbackNy = 0;
   }
 }
 
 class Enemy extends Entity {
-  constructor(x, y, roomId) {
-    super(x, y, ENEMY_SIZE, "#e53935");
-    this.hp = ENEMY_MAX_HP;
+  constructor(x, y, roomId, isElite = false) {
+    const size = isElite ? ENEMY_ELITE_SIZE : ENEMY_SIZE;
+    const maxHp = isElite ? ENEMY_ELITE_HP : ENEMY_MAX_HP;
+    super(x, y, size, isElite ? "#8b0000" : "#e53935");
+    this.hp = maxHp;
     this.roomId = roomId;
+    this.damage = isElite ? ENEMY_ELITE_DAMAGE : 1;
     this.hitFlashTimer = 0;
+    this.knockbackRemaining = 0;
+    this.knockbackNx = 0;
+    this.knockbackNy = 0;
+    this.fireballCooldown = 0; // used in room where demons shoot
   }
 
   draw() {
@@ -177,6 +208,7 @@ class Projectile extends Entity {
       this.y + this.half > ROOM_MARGIN_Y + ROOM_HEIGHT
     ) {
       this.alive = false;
+      spawnExplosion(this.x, this.y);
       return;
     }
 
@@ -184,13 +216,56 @@ class Projectile extends Entity {
     for (const ob of obstacles) {
       if (rectIntersect(this, ob)) {
         this.alive = false;
+        spawnExplosion(this.x, this.y);
         return;
       }
     }
   }
 
   draw() {
-    ctx.fillStyle = this.color;
+    // Draw a meteor-style projectile: bright orange core, yellow edge, and a fading tail.
+
+    // Tail direction is opposite velocity
+    const speed = Math.hypot(this.vx, this.vy) || 1;
+    const dirX = this.vx / speed;
+    const dirY = this.vy / speed;
+
+    const tailLength = this.size * 3;
+    const tailStartX = this.x - dirX * this.half;
+    const tailStartY = this.y - dirY * this.half;
+    const tailEndX = tailStartX - dirX * tailLength;
+    const tailEndY = tailStartY - dirY * tailLength;
+
+    // Tail (fading line)
+    const tailGradient = ctx.createLinearGradient(
+      tailStartX,
+      tailStartY,
+      tailEndX,
+      tailEndY
+    );
+    tailGradient.addColorStop(0, "rgba(255, 215, 64, 0.9)"); // bright near core
+    tailGradient.addColorStop(1, "rgba(255, 152, 0, 0)");   // fade out
+
+    ctx.strokeStyle = tailGradient;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(tailStartX, tailStartY);
+    ctx.lineTo(tailEndX, tailEndY);
+    ctx.stroke();
+
+    // Core with yellow edge and orange center
+    const radial = ctx.createRadialGradient(
+      this.x,
+      this.y,
+      this.half * 0.2,
+      this.x,
+      this.y,
+      this.half
+    );
+    radial.addColorStop(0, "#ff9800"); // orange core
+    radial.addColorStop(1, "#ffeb3b"); // yellow edge
+
+    ctx.fillStyle = radial;
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.half, 0, Math.PI * 2);
     ctx.fill();
@@ -198,11 +273,15 @@ class Projectile extends Entity {
 }
 
 function rectIntersect(a, b) {
+  const aw = a.boundsHalfW !== undefined ? a.boundsHalfW : a.half;
+  const ah = a.boundsHalfH !== undefined ? a.boundsHalfH : a.half;
+  const bw = b.boundsHalfW !== undefined ? b.boundsHalfW : b.half;
+  const bh = b.boundsHalfH !== undefined ? b.boundsHalfH : b.half;
   return !(
-    a.x + a.half <= b.x - b.half ||
-    a.x - a.half >= b.x + b.half ||
-    a.y + a.half <= b.y - b.half ||
-    a.y - a.half >= b.y + b.half
+    a.x + aw <= b.x - bw ||
+    a.x - aw >= b.x + bw ||
+    a.y + ah <= b.y - bh ||
+    a.y - ah >= b.y + bh
   );
 }
 
@@ -217,34 +296,113 @@ function createObstacle(x, y, size) {
   return { x, y, size, get half() { return size / 2; } };
 }
 
+// Doorway zones (room-local 0..640, 0..480) to avoid placing blocks
+const DOOR_LEFT = { x: 0, y: 200, w: 55, h: 80 };
+const DOOR_RIGHT = { x: 585, y: 200, w: 55, h: 80 };
+const DOOR_TOP = { x: 275, y: 0, w: 90, h: 55 };
+const DOOR_BOTTOM = { x: 275, y: 425, w: 90, h: 55 };
+
+function obstacleOverlapsDoorway(rx, ry, size) {
+  const h = size / 2;
+  const obs = { left: rx - h, right: rx + h, top: ry - h, bottom: ry + h };
+  const doors = [DOOR_LEFT, DOOR_RIGHT, DOOR_TOP, DOOR_BOTTOM];
+  for (const d of doors) {
+    if (!(obs.right <= d.x || obs.left >= d.x + d.w || obs.bottom <= d.y || obs.top >= d.y + d.h))
+      return true;
+  }
+  return false;
+}
+
+// Spawn zones (room-local): { x, y, r } so obstacles are never placed on player or enemy spawns
+const SPAWN_ZONES = new Map([
+  [0, [{ x: 320, y: 240, r: 75 }, { x: 140, y: 140, r: 35 }, { x: 500, y: 160, r: 35 }, { x: 160, y: 340, r: 35 }, { x: 480, y: 320, r: 35 }]],
+  [1, [{ x: 180, y: 160, r: 35 }, { x: 460, y: 180, r: 35 }, { x: 200, y: 320, r: 35 }, { x: 440, y: 300, r: 35 }]],
+  [2, [{ x: 180, y: 160, r: 35 }, { x: 460, y: 200, r: 35 }, { x: 220, y: 340, r: 35 }, { x: 420, y: 320, r: 35 }]],
+  [3, [{ x: 160, y: 180, r: 35 }, { x: 520, y: 240, r: 35 }, { x: 320, y: 160, r: 35 }, { x: 380, y: 320, r: 35 }]],
+  [4, [{ x: 140, y: 140, r: 40 }, { x: 480, y: 160, r: 40 }, { x: 160, y: 340, r: 40 }, { x: 460, y: 320, r: 40 }]],
+  [5, [{ x: 180, y: 160, r: 40 }, { x: 440, y: 180, r: 40 }, { x: 200, y: 320, r: 40 }, { x: 420, y: 300, r: 40 }]],
+  [6, [{ x: 160, y: 160, r: 40 }, { x: 460, y: 200, r: 40 }, { x: 220, y: 340, r: 40 }, { x: 400, y: 320, r: 40 }]],
+  [7, [{ x: 140, y: 180, r: 40 }, { x: 500, y: 240, r: 40 }, { x: 300, y: 160, r: 40 }, { x: 360, y: 320, r: 40 }]],
+]);
+
+function obstacleOverlapsSpawnZone(roomId, rx, ry, size) {
+  const zones = SPAWN_ZONES.get(roomId);
+  if (!zones) return false;
+  const obsR = size / 2;
+  for (const z of zones) {
+    const dist = Math.hypot(rx - z.x, ry - z.y);
+    if (dist < obsR + z.r) return true;
+  }
+  return false;
+}
+
+function addObstacleToRoom(roomId, roomLocalX, roomLocalY, size) {
+  if (obstacleOverlapsDoorway(roomLocalX, roomLocalY, size)) return;
+  if (obstacleOverlapsSpawnZone(roomId, roomLocalX, roomLocalY, size)) return;
+  const list = roomObstacles.get(roomId) || [];
+  list.push(createObstacle(ROOM_MARGIN_X + roomLocalX, ROOM_MARGIN_Y + roomLocalY, size));
+  roomObstacles.set(roomId, list);
+}
+
 function setupRoomObstacles() {
   roomObstacles.clear();
+  const add = (roomId, x, y, size) => addObstacleToRoom(roomId, x, y, size);
 
-  // Room 0: some central blocks and side walls
-  roomObstacles.set(0, [
-    createObstacle(ROOM_MARGIN_X + ROOM_WIDTH / 2 - 60, ROOM_MARGIN_Y + ROOM_HEIGHT / 2, 40),
-    createObstacle(ROOM_MARGIN_X + ROOM_WIDTH / 2 + 60, ROOM_MARGIN_Y + ROOM_HEIGHT / 2, 40),
-  ]);
+  // Room 0 – mix of 2, 3, 4, 5 blocks
+  add(0, 120, 100, 28); add(0, 148, 100, 28); add(0, 176, 100, 28); add(0, 204, 100, 28); add(0, 232, 100, 28); // block of 5
+  add(0, 480, 140, 32); add(0, 512, 140, 32); add(0, 544, 140, 32); // block of 3
+  add(0, 180, 340, 26); add(0, 206, 340, 26); // block of 2
+  add(0, 420, 320, 30); add(0, 450, 320, 30); add(0, 480, 320, 30); add(0, 510, 320, 30); // block of 4
+  add(0, 320, 220, 28); add(0, 348, 220, 28); // block of 2
 
-  // Room 1: horizontal line of cubes
-  roomObstacles.set(1, [
-    createObstacle(ROOM_MARGIN_X + ROOM_WIDTH / 2 - 80, ROOM_MARGIN_Y + ROOM_HEIGHT / 2 - 40, 32),
-    createObstacle(ROOM_MARGIN_X + ROOM_WIDTH / 2, ROOM_MARGIN_Y + ROOM_HEIGHT / 2, 32),
-    createObstacle(ROOM_MARGIN_X + ROOM_WIDTH / 2 + 80, ROOM_MARGIN_Y + ROOM_HEIGHT / 2 + 40, 32),
-  ]);
+  // Room 1
+  add(1, 100, 120, 30); add(1, 130, 120, 30); add(1, 160, 120, 30); // block of 3
+  add(1, 520, 100, 26); add(1, 546, 100, 26); add(1, 572, 100, 26); add(1, 598, 100, 26); add(1, 624, 100, 26); // block of 5
+  add(1, 200, 360, 32); add(1, 232, 360, 32); // block of 2
+  add(1, 380, 180, 28); add(1, 408, 180, 28); add(1, 436, 180, 28); add(1, 464, 180, 28); // block of 4
+  add(1, 280, 380, 26); add(1, 306, 380, 26); add(1, 332, 380, 26); // block of 3
 
-  // Room 2: vertical wall with a gap
-  roomObstacles.set(2, [
-    createObstacle(ROOM_MARGIN_X + ROOM_WIDTH / 2 - 20, ROOM_MARGIN_Y + ROOM_HEIGHT / 2 - 100, 30),
-    createObstacle(ROOM_MARGIN_X + ROOM_WIDTH / 2 - 20, ROOM_MARGIN_Y + ROOM_HEIGHT / 2 + 100, 30),
-  ]);
+  // Room 2
+  add(2, 80, 80, 28); add(2, 108, 80, 28); add(2, 136, 80, 28); add(2, 164, 80, 28); // block of 4
+  add(2, 540, 140, 30); add(2, 570, 140, 30); // block of 2
+  add(2, 140, 380, 26); add(2, 166, 380, 26); add(2, 192, 380, 26); add(2, 218, 380, 26); add(2, 244, 380, 26); // block of 5
+  add(2, 460, 340, 32); add(2, 492, 340, 32); add(2, 524, 340, 32); // block of 3
+  add(2, 340, 260, 28); add(2, 368, 260, 28); // block of 2
 
-  // Room 3: scattered cubes
-  roomObstacles.set(3, [
-    createObstacle(ROOM_MARGIN_X + 150, ROOM_MARGIN_Y + 200, 30),
-    createObstacle(ROOM_MARGIN_X + 450, ROOM_MARGIN_Y + 260, 30),
-    createObstacle(ROOM_MARGIN_X + 350, ROOM_MARGIN_Y + 120, 30),
-  ]);
+  // Room 3
+  add(3, 120, 200, 30); add(3, 150, 200, 30); add(3, 180, 200, 30); // block of 3
+  add(3, 400, 80, 26); add(3, 426, 80, 26); add(3, 452, 80, 26); add(3, 478, 80, 26); // block of 4
+  add(3, 200, 360, 28); add(3, 228, 360, 28); add(3, 256, 360, 28); add(3, 284, 360, 28); add(3, 312, 360, 28); // block of 5
+  add(3, 520, 280, 32); add(3, 552, 280, 32); // block of 2
+  add(3, 350, 140, 26); add(3, 376, 140, 26); // block of 2
+
+  // Room 4 – more blocks
+  add(4, 140, 100, 28); add(4, 168, 100, 28); add(4, 196, 100, 28); add(4, 224, 100, 28); // block of 4
+  add(4, 480, 160, 30); add(4, 510, 160, 30); add(4, 540, 160, 30); // block of 3
+  add(4, 100, 340, 26); add(4, 126, 340, 26); add(4, 152, 340, 26); add(4, 178, 340, 26); add(4, 204, 340, 26); // block of 5
+  add(4, 420, 320, 32); add(4, 452, 320, 32); // block of 2
+  add(4, 280, 220, 28); add(4, 308, 220, 28); add(4, 336, 220, 28); // block of 3
+
+  // Room 5
+  add(5, 80, 120, 30); add(5, 110, 120, 30); add(5, 140, 120, 30); add(5, 170, 120, 30); // block of 4
+  add(5, 560, 100, 26); add(5, 586, 100, 26); add(5, 612, 100, 26); // block of 3
+  add(5, 180, 360, 28); add(5, 208, 360, 28); add(5, 236, 360, 28); add(5, 264, 360, 28); add(5, 292, 360, 28); // block of 5
+  add(5, 400, 180, 32); add(5, 432, 180, 32); // block of 2
+  add(5, 320, 380, 26); add(5, 346, 380, 26); add(5, 372, 380, 26); // block of 3
+
+  // Room 6
+  add(6, 100, 80, 28); add(6, 128, 80, 28); add(6, 156, 80, 28); add(6, 184, 80, 28); add(6, 212, 80, 28); // block of 5
+  add(6, 520, 140, 30); add(6, 550, 140, 30); add(6, 580, 140, 30); add(6, 610, 140, 30); // block of 4
+  add(6, 140, 380, 26); add(6, 166, 380, 26); add(6, 192, 380, 26); // block of 3
+  add(6, 440, 340, 32); add(6, 472, 340, 32); // block of 2
+  add(6, 340, 260, 28); add(6, 368, 260, 28); add(6, 396, 260, 28); // block of 3
+
+  // Room 7
+  add(7, 120, 180, 30); add(7, 150, 180, 30); add(7, 180, 180, 30); add(7, 210, 180, 30); // block of 4
+  add(7, 380, 100, 26); add(7, 406, 100, 26); add(7, 432, 100, 26); add(7, 458, 100, 26); add(7, 484, 100, 26); // block of 5
+  add(7, 200, 360, 28); add(7, 228, 360, 28); add(7, 256, 360, 28); // block of 3
+  add(7, 500, 300, 32); add(7, 532, 300, 32); add(7, 564, 300, 32); // block of 3
+  add(7, 320, 140, 26); add(7, 346, 140, 26); // block of 2
 }
 
 let player = new Player(
@@ -254,26 +412,60 @@ let player = new Player(
 
 let enemies = [];
 let projectiles = [];
+let enemyProjectiles = []; // slow fireballs thrown by demons in one room
+let explosions = []; // fireball impact effects
+let deathScatterParticles = []; // enemy sword-death scatter pieces
 let isGameOver = false;
 let victory = false;
+let hasStarted = false; // becomes true after first start
 
 function setupEnemies() {
   enemies = [];
 
-  // Room 0
-  enemies.push(new Enemy(ROOM_MARGIN_X + 160, ROOM_MARGIN_Y + 160, 0));
-  enemies.push(new Enemy(ROOM_MARGIN_X + 480, ROOM_MARGIN_Y + 200, 0));
+  // Room 0 – 4 enemies
+  enemies.push(new Enemy(ROOM_MARGIN_X + 140, ROOM_MARGIN_Y + 140, 0));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 500, ROOM_MARGIN_Y + 160, 0));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 160, ROOM_MARGIN_Y + 340, 0));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 480, ROOM_MARGIN_Y + 320, 0));
 
-  // Room 1
-  enemies.push(new Enemy(ROOM_MARGIN_X + 220, ROOM_MARGIN_Y + 180, 1));
+  // Room 1 – 4 enemies
+  enemies.push(new Enemy(ROOM_MARGIN_X + 180, ROOM_MARGIN_Y + 160, 1));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 460, ROOM_MARGIN_Y + 180, 1));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 200, ROOM_MARGIN_Y + 320, 1));
   enemies.push(new Enemy(ROOM_MARGIN_X + 440, ROOM_MARGIN_Y + 300, 1));
 
-  // Room 2
-  enemies.push(new Enemy(ROOM_MARGIN_X + 220, ROOM_MARGIN_Y + 320, 2));
+  // Room 2 – 4 enemies (this room’s demons also throw slow fireballs)
+  enemies.push(new Enemy(ROOM_MARGIN_X + 180, ROOM_MARGIN_Y + 160, 2));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 460, ROOM_MARGIN_Y + 200, 2));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 220, ROOM_MARGIN_Y + 340, 2));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 420, ROOM_MARGIN_Y + 320, 2));
 
-  // Room 3
-  enemies.push(new Enemy(ROOM_MARGIN_X + 520, ROOM_MARGIN_Y + 260, 3));
-  enemies.push(new Enemy(ROOM_MARGIN_X + 320, ROOM_MARGIN_Y + 200, 3));
+  // Room 3 – 4 enemies
+  enemies.push(new Enemy(ROOM_MARGIN_X + 160, ROOM_MARGIN_Y + 180, 3));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 520, ROOM_MARGIN_Y + 240, 3));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 320, ROOM_MARGIN_Y + 160, 3));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 380, ROOM_MARGIN_Y + 320, 3));
+
+  // Rooms 4–7 – 4 elite demons each (twice as big, twice as strong)
+  enemies.push(new Enemy(ROOM_MARGIN_X + 140, ROOM_MARGIN_Y + 140, 4, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 480, ROOM_MARGIN_Y + 160, 4, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 160, ROOM_MARGIN_Y + 340, 4, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 460, ROOM_MARGIN_Y + 320, 4, true));
+
+  enemies.push(new Enemy(ROOM_MARGIN_X + 180, ROOM_MARGIN_Y + 160, 5, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 440, ROOM_MARGIN_Y + 180, 5, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 200, ROOM_MARGIN_Y + 320, 5, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 420, ROOM_MARGIN_Y + 300, 5, true));
+
+  enemies.push(new Enemy(ROOM_MARGIN_X + 160, ROOM_MARGIN_Y + 160, 6, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 460, ROOM_MARGIN_Y + 200, 6, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 220, ROOM_MARGIN_Y + 340, 6, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 400, ROOM_MARGIN_Y + 320, 6, true));
+
+  enemies.push(new Enemy(ROOM_MARGIN_X + 140, ROOM_MARGIN_Y + 180, 7, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 500, ROOM_MARGIN_Y + 240, 7, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 300, ROOM_MARGIN_Y + 160, 7, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 360, ROOM_MARGIN_Y + 320, 7, true));
 }
 
 function resetGame() {
@@ -283,10 +475,53 @@ function resetGame() {
   const startY = ROOM_MARGIN_Y + ROOM_HEIGHT / 2;
   player.reset(startX, startY, 0);
   projectiles = [];
+  enemyProjectiles = [];
+  deathScatterParticles = [];
   isGameOver = false;
   victory = false;
   overlayEl.classList.add("hidden");
   updateHUD();
+}
+
+function spawnDeathScatter(x, y, roomId) {
+  const colors = ["#e53935", "#b71c1c", "#8b0000", "#5d0000", "#2a1515"];
+  const numPieces = 18;
+  for (let i = 0; i < numPieces; i++) {
+    const angle = (Math.PI * 2 * i) / numPieces + Math.random() * 0.8;
+    const speed = 2 + Math.random() * 4;
+    deathScatterParticles.push({
+      x,
+      y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      size: 4 + Math.random() * 6,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      alpha: 1,
+      roomId,
+    });
+  }
+}
+
+function updateDeathScatter() {
+  deathScatterParticles.forEach((p) => {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.15; // slight gravity
+    p.alpha -= 0.022;
+  });
+  deathScatterParticles = deathScatterParticles.filter((p) => p.alpha > 0);
+}
+
+function drawDeathScatter() {
+  deathScatterParticles.forEach((p) => {
+    if (p.roomId !== player.currentRoom) return;
+    const hex = p.color;
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    ctx.fillStyle = `rgba(${r},${g},${b},${p.alpha})`;
+    ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+  });
 }
 
 function updateHUD() {
@@ -297,17 +532,74 @@ function updateHUD() {
   enemiesValueEl.textContent = aliveEnemies.toString();
 }
 
+function showStartScreen() {
+  messageTextEl.innerHTML = `
+    <div><strong>Press Spacebar to START</strong></div>
+    <div style="margin-top: 12px;"><strong>How to play</strong></div>
+    <div>To move, press WASD or ARROW keys.</div>
+    <div>To attack, press SPACEBAR.</div>
+    <div>To switch weapons, press R.</div>
+  `;
+  restartButton.textContent = "Start";
+  overlayEl.classList.remove("hidden");
+}
+
+function spawnExplosion(x, y) {
+  explosions.push({
+    x,
+    y,
+    radius: 4,
+    maxRadius: 22,
+    alpha: 1.0,
+  });
+}
+
+function updateExplosions() {
+  explosions.forEach((e) => {
+    e.radius += 1.8;
+    e.alpha -= 0.08;
+  });
+  explosions = explosions.filter((e) => e.alpha > 0);
+}
+
+function drawExplosions() {
+  explosions.forEach((e) => {
+    const grad = ctx.createRadialGradient(
+      e.x,
+      e.y,
+      0,
+      e.x,
+      e.y,
+      e.radius
+    );
+    grad.addColorStop(0, `rgba(255, 171, 64, ${e.alpha})`);
+    grad.addColorStop(1, `rgba(255, 87, 34, 0)`);
+
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
 document.addEventListener("keydown", (e) => {
   keys[e.key.toLowerCase()] = true;
 
   if (e.key === " " || e.code === "Space") {
+    if (!hasStarted) {
+      hasStarted = true;
+      resetGame();
+      overlayEl.classList.add("hidden");
+      e.preventDefault();
+      return;
+    }
     if (!isGameOver) {
       attemptAttack();
     }
     e.preventDefault();
   }
 
-  if (e.key.toLowerCase() === "s") {
+  if (e.key.toLowerCase() === "r") {
     if (!isGameOver) {
       toggleWeapon();
     }
@@ -320,6 +612,7 @@ document.addEventListener("keyup", (e) => {
 });
 
 restartButton.addEventListener("click", () => {
+  hasStarted = true;
   resetGame();
 });
 
@@ -333,14 +626,20 @@ function attemptAttack() {
   if (player.attackCooldown > 0) return;
 
   if (player.weapon === WEAPON_FIREBALL) {
-    // Fire a projectile in facing direction
-    const angle = player.facingAngle;
-    const vx = Math.cos(angle) * FIREBALL_SPEED;
-    const vy = Math.sin(angle) * FIREBALL_SPEED;
-    const px = player.x + Math.cos(angle) * (player.half + FIREBALL_SIZE);
-    const py = player.y + Math.sin(angle) * (player.half + FIREBALL_SIZE);
-    const proj = new Projectile(px, py, vx, vy, player.currentRoom);
-    projectiles.push(proj);
+    // Fire three projectiles in a small fan centered on facingAngle
+    const baseAngle = player.facingAngle;
+    const spread = Math.PI / 18; // ~10° between shots
+    const angles = [baseAngle - spread, baseAngle, baseAngle + spread];
+
+    angles.forEach((angle) => {
+      const vx = Math.cos(angle) * FIREBALL_SPEED;
+      const vy = Math.sin(angle) * FIREBALL_SPEED;
+      const px = player.x + Math.cos(angle) * (player.half + FIREBALL_SIZE);
+      const py = player.y + Math.sin(angle) * (player.half + FIREBALL_SIZE);
+      const proj = new Projectile(px, py, vx, vy, player.currentRoom);
+      projectiles.push(proj);
+    });
+
     player.attackCooldown = 18;
   } else if (player.weapon === WEAPON_SWORD) {
     performSwordAttack();
@@ -368,11 +667,33 @@ function performSwordAttack() {
     if (Math.abs(diff) <= SWORD_ARC) {
       enemy.hp -= SWORD_DAMAGE;
       enemy.hitFlashTimer = 6;
+      if (enemy.hp <= 0) {
+        spawnDeathScatter(enemy.x, enemy.y, enemy.roomId);
+      }
     }
   });
 }
 
 function updatePlayerMovement() {
+  // Apply knockback first (slower, over multiple frames)
+  if (player.knockbackRemaining > 0) {
+    const move = Math.min(KNOCKBACK_SPEED_PER_FRAME, player.knockbackRemaining);
+    player.x += player.knockbackNx * move;
+    player.y += player.knockbackNy * move;
+    player.knockbackRemaining -= move;
+    player.x = clamp(
+      player.x,
+      ROOM_MARGIN_X + player.boundsHalfW,
+      ROOM_MARGIN_X + ROOM_WIDTH - player.boundsHalfW
+    );
+    player.y = clamp(
+      player.y,
+      ROOM_MARGIN_Y + player.boundsHalfH,
+      ROOM_MARGIN_Y + ROOM_HEIGHT - player.boundsHalfH
+    );
+    return;
+  }
+
   let moveX = 0;
   let moveY = 0;
 
@@ -408,8 +729,8 @@ function updatePlayerMovement() {
   let newX = player.x + moveX * speed;
   newX = clamp(
     newX,
-    ROOM_MARGIN_X + player.half,
-    ROOM_MARGIN_X + ROOM_WIDTH - player.half
+    ROOM_MARGIN_X + player.boundsHalfW,
+    ROOM_MARGIN_X + ROOM_WIDTH - player.boundsHalfW
   );
   const oldX = player.x;
   player.x = newX;
@@ -424,8 +745,8 @@ function updatePlayerMovement() {
   let newY = player.y + moveY * speed;
   newY = clamp(
     newY,
-    ROOM_MARGIN_Y + player.half,
-    ROOM_MARGIN_Y + ROOM_HEIGHT - player.half
+    ROOM_MARGIN_Y + player.boundsHalfH,
+    ROOM_MARGIN_Y + ROOM_HEIGHT - player.boundsHalfH
   );
   const oldY = player.y;
   player.y = newY;
@@ -437,6 +758,18 @@ function updatePlayerMovement() {
   }
 
   handleRoomTransitions();
+
+  // Enforce borders: player must stay inside the current room
+  player.x = clamp(
+    player.x,
+    ROOM_MARGIN_X + player.boundsHalfW,
+    ROOM_MARGIN_X + ROOM_WIDTH - player.boundsHalfW
+  );
+  player.y = clamp(
+    player.y,
+    ROOM_MARGIN_Y + player.boundsHalfH,
+    ROOM_MARGIN_Y + ROOM_HEIGHT - player.boundsHalfH
+  );
 }
 
 function handleRoomTransitions() {
@@ -452,44 +785,44 @@ function handleRoomTransitions() {
   // Left door
   if (
     room.neighbors.left !== undefined &&
-    player.x - player.half <= ROOM_MARGIN_X + 4 &&
+    player.x - player.boundsHalfW <= ROOM_MARGIN_X + 4 &&
     Math.abs(player.y - leftDoorY) <= doorThickness / 2
   ) {
     player.currentRoom = room.neighbors.left;
-    player.x = ROOM_MARGIN_X + ROOM_WIDTH - player.half - 10;
+    player.x = ROOM_MARGIN_X + ROOM_WIDTH - player.boundsHalfW - 10;
     player.y = leftDoorY;
   }
 
   // Right door
   if (
     room.neighbors.right !== undefined &&
-    player.x + player.half >= ROOM_MARGIN_X + ROOM_WIDTH - 4 &&
+    player.x + player.boundsHalfW >= ROOM_MARGIN_X + ROOM_WIDTH - 4 &&
     Math.abs(player.y - rightDoorY) <= doorThickness / 2
   ) {
     player.currentRoom = room.neighbors.right;
-    player.x = ROOM_MARGIN_X + player.half + 10;
+    player.x = ROOM_MARGIN_X + player.boundsHalfW + 10;
     player.y = rightDoorY;
   }
 
   // Top door
   if (
     room.neighbors.up !== undefined &&
-    player.y - player.half <= ROOM_MARGIN_Y + 4 &&
+    player.y - player.boundsHalfH <= ROOM_MARGIN_Y + 4 &&
     Math.abs(player.x - topDoorX) <= doorThickness / 2
   ) {
     player.currentRoom = room.neighbors.up;
-    player.y = ROOM_MARGIN_Y + ROOM_HEIGHT - player.half - 10;
+    player.y = ROOM_MARGIN_Y + ROOM_HEIGHT - player.boundsHalfH - 10;
     player.x = topDoorX;
   }
 
   // Bottom door
   if (
     room.neighbors.down !== undefined &&
-    player.y + player.half >= ROOM_MARGIN_Y + ROOM_HEIGHT - 4 &&
+    player.y + player.boundsHalfH >= ROOM_MARGIN_Y + ROOM_HEIGHT - 4 &&
     Math.abs(player.x - bottomDoorX) <= doorThickness / 2
   ) {
     player.currentRoom = room.neighbors.down;
-    player.y = ROOM_MARGIN_Y + player.half + 10;
+    player.y = ROOM_MARGIN_Y + player.boundsHalfH + 10;
     player.x = bottomDoorX;
   }
 }
@@ -497,6 +830,25 @@ function handleRoomTransitions() {
 function updateEnemies() {
   enemies.forEach((enemy) => {
     if (enemy.hp <= 0 || enemy.roomId !== player.currentRoom) return;
+
+    // Apply knockback (slower, over multiple frames)
+    if (enemy.knockbackRemaining > 0) {
+      const move = Math.min(KNOCKBACK_SPEED_PER_FRAME, enemy.knockbackRemaining);
+      enemy.x += enemy.knockbackNx * move;
+      enemy.y += enemy.knockbackNy * move;
+      enemy.knockbackRemaining -= move;
+      enemy.x = clamp(
+        enemy.x,
+        ROOM_MARGIN_X + enemy.half,
+        ROOM_MARGIN_X + ROOM_WIDTH - enemy.half
+      );
+      enemy.y = clamp(
+        enemy.y,
+        ROOM_MARGIN_Y + enemy.half,
+        ROOM_MARGIN_Y + ROOM_HEIGHT - enemy.half
+      );
+      return;
+    }
 
     const dx = player.x - enemy.x;
     const dy = player.y - enemy.y;
@@ -525,9 +877,56 @@ function updateEnemies() {
       }
     }
 
-    // Damage player on contact
+    // In the “fireball room”, demons periodically shoot a slow fireball at the player
+    if (
+      enemy.roomId === ROOM_DEMONS_SHOOT_FIREBALLS &&
+      enemy.roomId === player.currentRoom &&
+      enemy.fireballCooldown <= 0
+    ) {
+      const dx = player.x - enemy.x;
+      const dy = player.y - enemy.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      const vx = (dx / dist) * ENEMY_FIREBALL_SPEED;
+      const vy = (dy / dist) * ENEMY_FIREBALL_SPEED;
+      const startX = enemy.x + (dx / dist) * (enemy.half + ENEMY_FIREBALL_SIZE);
+      const startY = enemy.y + (dy / dist) * (enemy.half + ENEMY_FIREBALL_SIZE);
+      enemyProjectiles.push({
+        x: startX,
+        y: startY,
+        vx,
+        vy,
+        roomId: enemy.roomId,
+        size: ENEMY_FIREBALL_SIZE,
+        alive: true,
+        get half() { return this.size / 2; },
+      });
+      enemy.fireballCooldown = ENEMY_FIREBALL_COOLDOWN;
+    }
+    if (enemy.fireballCooldown > 0) enemy.fireballCooldown--;
+
+    // Damage player on contact and start knockback (applied over frames)
     if (rectIntersect(enemy, player)) {
-      player.hp = Math.max(0, player.hp - 1);
+      player.hp = Math.max(0, player.hp - enemy.damage);
+
+      let kdx = player.x - enemy.x;
+      let kdy = player.y - enemy.y;
+      let kdist = Math.hypot(kdx, kdy);
+      if (kdist === 0) {
+        kdx = 1;
+        kdy = 0;
+        kdist = 1;
+      }
+      const nx = kdx / kdist;
+      const ny = kdy / kdist;
+
+      player.knockbackRemaining = KNOCKBACK_DISTANCE_EACH;
+      player.knockbackNx = nx;
+      player.knockbackNy = ny;
+
+      enemy.knockbackRemaining = KNOCKBACK_DISTANCE_EACH;
+      enemy.knockbackNx = -nx;
+      enemy.knockbackNy = -ny;
+
       if (player.hp <= 0) {
         isGameOver = true;
         victory = false;
@@ -552,11 +951,46 @@ function updateProjectiles() {
         enemy.hp -= FIREBALL_DAMAGE;
         enemy.hitFlashTimer = 6;
         p.alive = false;
+        spawnExplosion(p.x, p.y);
       }
     });
   });
 
   projectiles = projectiles.filter((p) => p.alive);
+}
+
+function updateEnemyProjectiles() {
+  const obstacles = roomObstacles.get(player.currentRoom) || [];
+  enemyProjectiles.forEach((p) => {
+    p.x += p.vx;
+    p.y += p.vy;
+
+    if (
+      p.x - p.half < ROOM_MARGIN_X ||
+      p.x + p.half > ROOM_MARGIN_X + ROOM_WIDTH ||
+      p.y - p.half < ROOM_MARGIN_Y ||
+      p.y + p.half > ROOM_MARGIN_Y + ROOM_HEIGHT
+    ) {
+      p.alive = false;
+      return;
+    }
+    for (const ob of obstacles) {
+      if (rectIntersect(p, ob)) {
+        p.alive = false;
+        return;
+      }
+    }
+    if (rectIntersect(p, player) && player.currentRoom === p.roomId) {
+      player.hp = Math.max(0, player.hp - ENEMY_FIREBALL_DAMAGE);
+      p.alive = false;
+      if (player.hp <= 0) {
+        isGameOver = true;
+        victory = false;
+        showEndMessage();
+      }
+    }
+  });
+  enemyProjectiles = enemyProjectiles.filter((p) => p.alive);
 }
 
 function checkWinCondition() {
@@ -571,7 +1005,8 @@ function checkWinCondition() {
 function showEndMessage() {
   messageTextEl.textContent = victory
     ? "You defeated all the demons!"
-    : "You were slain by the demons.";
+    : "You lose";
+  restartButton.textContent = "Restart";
   overlayEl.classList.remove("hidden");
 }
 
@@ -688,7 +1123,7 @@ function drawPlayer() {
     player.draw();
   }
 
-  // sword (visual) when swinging: long blade sweeping 180° in front of player
+  // sword (visual) when swinging: tapered blade (broad base, narrow tip) sweeping 180° in front of player
   if (player.weapon === WEAPON_SWORD && player.swordSwingTimer > 0) {
     const t = 1 - player.swordSwingTimer / SWORD_SWING_DURATION; // 0 → 1 over swing
     const startAngle = player.facingAngle - SWORD_ARC; // start on one side
@@ -696,21 +1131,23 @@ function drawPlayer() {
     const swingAngle = startAngle + (endAngle - startAngle) * t;
 
     const bladeLength = SWORD_RANGE;
-    const bladeThickness = 6;
+    const baseHalfThick = 10;  // broader base near player
+    const tipHalfThick = 2;    // tapers to narrow point
 
     ctx.save();
     ctx.translate(player.x, player.y);
     ctx.rotate(swingAngle);
 
-    // Draw from just outside player body outward
     const startOffset = player.half;
+    const tipX = startOffset + bladeLength;
     ctx.fillStyle = "rgba(255,255,255,0.95)";
-    ctx.fillRect(
-      startOffset,              // x (forward from player center)
-      -bladeThickness / 2,      // y (centered vertically)
-      bladeLength,              // width (length of sword)
-      bladeThickness            // height (thickness)
-    );
+    ctx.beginPath();
+    ctx.moveTo(startOffset, -baseHalfThick);   // base left
+    ctx.lineTo(startOffset, baseHalfThick);    // base right
+    ctx.lineTo(tipX, tipHalfThick);            // tip right (narrower)
+    ctx.lineTo(tipX, -tipHalfThick);            // tip left
+    ctx.closePath();
+    ctx.fill();
 
     ctx.restore();
   }
@@ -720,6 +1157,16 @@ function drawEnemies() {
   enemies.forEach((enemy) => {
     if (enemy.roomId !== player.currentRoom || enemy.hp <= 0) return;
     enemy.draw();
+  });
+}
+
+function drawEnemyProjectiles() {
+  enemyProjectiles.forEach((p) => {
+    if (p.roomId !== player.currentRoom || !p.alive) return;
+    ctx.fillStyle = "#b71c1c";
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.half, 0, Math.PI * 2);
+    ctx.fill();
   });
 }
 
@@ -735,7 +1182,7 @@ function drawUIHints() {
   ctx.font = "14px sans-serif";
   ctx.textAlign = "left";
   ctx.fillText(
-    "Move: Arrow keys | Attack: Space | Switch weapon: S",
+    "Move: Arrow keys | Attack: Space | Switch weapon: R",
     ROOM_MARGIN_X + 12,
     ROOM_MARGIN_Y + ROOM_HEIGHT - 12
   );
@@ -744,7 +1191,7 @@ function drawUIHints() {
 function gameLoop() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  if (!isGameOver) {
+  if (!isGameOver && hasStarted) {
     if (player.attackCooldown > 0) player.attackCooldown--;
     if (player.swordSwingTimer > 0) player.swordSwingTimer--;
     // Update hero walk animation
@@ -762,13 +1209,19 @@ function gameLoop() {
     updatePlayerMovement();
     updateEnemies();
     updateProjectiles();
+    updateEnemyProjectiles();
+    updateExplosions();
+    updateDeathScatter();
     checkWinCondition();
   }
 
   drawRoomBackground();
   drawObstacles();
   drawEnemies();
+  drawDeathScatter();
+  drawEnemyProjectiles();
   drawProjectiles();
+  drawExplosions();
   drawPlayer();
   drawUIHints();
 
@@ -778,6 +1231,6 @@ function gameLoop() {
 }
 
 // Initialize
-resetGame();
+showStartScreen();
 requestAnimationFrame(gameLoop);
 
