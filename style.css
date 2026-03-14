@@ -101,6 +101,17 @@ body {
   align-items: center;
 }
 
+.controls-hint {
+  margin-left: 16px;
+  padding-left: 12px;
+  border-left: 1px solid #444;
+  font-size: 11px;
+  color: #78909c;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .player-coins .coin {
   color: #ffc107;
   font-size: 18px;

@@ -14,6 +14,9 @@ const restartButton = document.getElementById("restart-button");
 const gameMusicEl = document.getElementById("game-music");
 const swordSwingEl = document.getElementById("sword-swing");
 const fireballWhooshEl = document.getElementById("fireball-whoosh");
+const coinCollectEl = document.getElementById("coin-collect");
+const itemEquipEl = document.getElementById("item-equip");
+const heartPickupEl = document.getElementById("heart-pickup");
 const ROOM_WIDTH = 640;
 const ROOM_HEIGHT = 480;
 const MINIMAP_PANEL_WIDTH = 140;
@@ -1872,6 +1875,10 @@ function updateHeartPickups() {
     const dx = player.x - h.x, dy = player.y - h.y;
     if (Math.hypot(dx, dy) < player.boundsHalfW + HEART_PICKUP_R) {
       player.hp += 1;
+      if (heartPickupEl) {
+        heartPickupEl.currentTime = 0;
+        heartPickupEl.play().catch(() => {});
+      }
       updateHUD();
       return false; // remove heart
     }
@@ -1885,6 +1892,10 @@ function updateCoinPickups() {
     const dx = player.x - c.x, dy = player.y - c.y;
     if (Math.hypot(dx, dy) < player.boundsHalfW + COIN_PICKUP_R) {
       player.coins += 1;
+      if (coinCollectEl) {
+        coinCollectEl.currentTime = 0;
+        coinCollectEl.play().catch(() => {});
+      }
       updateHUD();
       return false; // remove coin
     }
@@ -1983,8 +1994,8 @@ function drawRoom9CavernDoor() {
   const left = cx - w / 2;
   const top = cy - h / 2;
 
-  // Dark arch / frame (cavern mouth)
-  ctx.fillStyle = "#1a1a22";
+  // Dark brown arch / frame (cavern mouth)
+  ctx.fillStyle = "#2a2018";
   ctx.beginPath();
   ctx.moveTo(left, top + h);
   ctx.lineTo(left, top + 25);
@@ -1993,11 +2004,11 @@ function drawRoom9CavernDoor() {
   ctx.lineTo(left + w, top + h);
   ctx.closePath();
   ctx.fill();
-  ctx.strokeStyle = "#3d3d4a";
+  ctx.strokeStyle = "#5d4037";
   ctx.lineWidth = 4;
   ctx.stroke();
 
-  // Door panel slides open to the right
+  // Brown door panel slides open to the right
   const slideT = room9DoorState === "swinging"
     ? room9DoorSwingProgress / ROOM9_DOOR_SWING_FRAMES
     : room9DoorState === "open"
@@ -2007,9 +2018,9 @@ function drawRoom9CavernDoor() {
   const slideX = slideT * panelW;
 
   if (slideT < 1) {
-    ctx.fillStyle = "#2d2d38";
+    ctx.fillStyle = "#6d4c41";
     ctx.fillRect(left + slideX, top + 20, panelW, h - 25);
-    ctx.strokeStyle = "#4a4a5a";
+    ctx.strokeStyle = "#5d4037";
     ctx.lineWidth = 2;
     ctx.strokeRect(left + slideX, top + 20, panelW, h - 25);
   }
@@ -2052,6 +2063,10 @@ function tryPurchaseInSecretRoom() {
     } else if (item.id === "potion") {
       player.inventory.push("potion");
       // Use from inventory to add 5 health
+    }
+    if (itemEquipEl) {
+      itemEquipEl.currentTime = 0;
+      itemEquipEl.play().catch(() => {});
     }
     updateHUD();
   });
