@@ -8,18 +8,34 @@
   <link rel="stylesheet" href="style.css?v=2" />
 </head>
 <body>
+  <div class="weapon-strip" aria-label="Weapons">
+    <div id="weapon-fireball" class="weapon-slot" title="Fireball (press R to switch)">
+      <svg class="weapon-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <defs><radialGradient id="fbGrad" cx="0.4" cy="0.4" r="0.6"><stop offset="0" stop-color="#ff9800"/><stop offset="1" stop-color="#ffeb3b"/></radialGradient></defs>
+        <circle cx="12" cy="12" r="10" fill="url(#fbGrad)"/>
+        <circle cx="12" cy="12" r="5" fill="#fff" opacity="0.6"/>
+      </svg>
+      <span class="weapon-name">Fireball</span>
+    </div>
+    <div id="weapon-sword" class="weapon-slot" title="Sword (press R to switch)">
+      <svg class="weapon-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path fill="#b0bec5" stroke="#78909c" stroke-width="1" d="M12 2 L14 8 L12 10 L14 22 L10 22 L12 10 L10 8 Z"/>
+      </svg>
+      <span class="weapon-name">Sword</span>
+    </div>
+  </div>
   <div class="hud">
     <div class="hud-left">
-      <span id="player-health-label">Player HP:</span>
-      <span id="player-health-value">10</span>
-      <span id="weapon-label">Weapon:</span>
-      <span id="weapon-value">Fireball</span>
+      <div id="player-hearts" class="player-hearts" aria-label="Health"></div>
     </div>
     <div class="hud-right">
       <span id="enemies-label">Enemies left:</span>
       <span id="enemies-value">0</span>
-      <span id="coins-label">Coins:</span>
-      <span id="coins-value">0</span>
+      <div id="player-coins" class="player-coins" aria-label="Coins"></div>
+      <div class="inventory-wrap">
+        <div class="inventory-title">Inventory</div>
+        <div id="inventory-slots" class="inventory-slots" aria-label="Inventory"></div>
+      </div>
     </div>
   </div>
 
@@ -28,6 +44,7 @@
   <div id="message-overlay" class="overlay hidden">
     <div id="message-text"></div>
     <button id="restart-button">Restart</button>
+    <div id="start-hint" class="start-hint"></div>
   </div>
 
   <script src="game.js?v=2"></script>

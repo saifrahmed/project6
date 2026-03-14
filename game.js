@@ -4,17 +4,20 @@ const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 
 // HUD elements
-const playerHealthValueEl = document.getElementById("player-health-value");
-const weaponValueEl = document.getElementById("weapon-value");
+const playerHeartsEl = document.getElementById("player-hearts");
+const weaponFireballEl = document.getElementById("weapon-fireball");
+const weaponSwordEl = document.getElementById("weapon-sword");
 const enemiesValueEl = document.getElementById("enemies-value");
-const coinsValueEl = document.getElementById("coins-value");
+const playerCoinsEl = document.getElementById("player-coins");
 const overlayEl = document.getElementById("message-overlay");
 const messageTextEl = document.getElementById("message-text");
 const restartButton = document.getElementById("restart-button");
+const inventorySlotsEl = document.getElementById("inventory-slots");
 
 const ROOM_WIDTH = 640;
 const ROOM_HEIGHT = 480;
-const ROOM_MARGIN_X = (canvas.width - ROOM_WIDTH) / 2;
+const MINIMAP_PANEL_WIDTH = 140;
+const ROOM_MARGIN_X = MINIMAP_PANEL_WIDTH + (canvas.width - MINIMAP_PANEL_WIDTH - ROOM_WIDTH) / 2;
 const ROOM_MARGIN_Y = (canvas.height - ROOM_HEIGHT) / 2;
 const ROOM_TRANSITION_SPEED = 0.018; // progress per frame; ~1.1 sec for full slide
 
@@ -36,7 +39,8 @@ const ENEMY_SPEED = 1.0;
 const SMALL_ENEMY_SPEED = ENEMY_SPEED * 2.5; // fast movers for small enemies
 const ROOM_DEMONS_SHOOT_FIREBALLS = 2; // room index where demons throw slow fireballs
 const ENEMY_FIREBALL_SPEED = 1.2;
-const ENEMY_FIREBALL_COOLDOWN = 90;   // frames between shots per demon
+const ENEMY_FIREBALL_COOLDOWN = 90;   // frames between shots per demon (unused in fireball room)
+const DEMON_FIREBALL_COOLDOWN = 60 * 5; // 5 seconds between single fireball per demon in room 2
 const ENEMY_FIREBALL_SIZE = 8;
 const ENEMY_FIREBALL_DAMAGE = 1;
 
@@ -99,11 +103,9 @@ const heroAnim = {
   frameInterval: 8, // frames between animation steps
 };
 
-// 2x4 grid of rooms: indices 0..7
-// [0] [1] [2] [3]
-// [4] [5] [6] [7]
+// Room layout: row0 [9][8], row1 [0][1][2][3], row2 [4][5][6][7]. Room 7 = boss.
 const ROOMS = [
-  { id: 0, neighbors: { right: 1, down: 4 } },
+  { id: 0, neighbors: { up: 8, right: 1, down: 4 } },
   { id: 1, neighbors: { left: 0, right: 2, down: 5 } },
   { id: 2, neighbors: { left: 1, right: 3, down: 6 } },
   { id: 3, neighbors: { left: 2, down: 7 } },
@@ -111,7 +113,30 @@ const ROOMS = [
   { id: 5, neighbors: { up: 1, left: 4, right: 6 } },
   { id: 6, neighbors: { up: 2, left: 5, right: 7 } },
   { id: 7, neighbors: { up: 3, left: 6 } },
+  { id: 8, neighbors: { left: 9, down: 0 } },
+  { id: 9, neighbors: { right: 8 } },
+  { id: 10, neighbors: { up: 9 } }, // hidden room (not on minimap); exit via top
 ];
+const HIDDEN_ROOM = 10;
+// Secret room shop: three items in the middle of room 10
+const SHOP_CENTER_X = ROOM_MARGIN_X + ROOM_WIDTH / 2;
+const SHOP_CENTER_Y = ROOM_MARGIN_Y + ROOM_HEIGHT / 2;
+const SHOP_ITEM_SPACING = 90;
+const SHOP_ITEM_R = 36; // interaction / draw radius per item
+const SHOP_ITEMS = [
+  { id: "shield", name: "Wooden Shield", price: 4, offsetX: -SHOP_ITEM_SPACING, offsetY: 0 },
+  { id: "key", name: "Key", price: 6, offsetX: 0, offsetY: 0 },
+  { id: "potion", name: "Healing Potion", price: 3, offsetX: SHOP_ITEM_SPACING, offsetY: 0 },
+];
+let shopSold = { shield: false, key: false, potion: false };
+const ROOM9_CAVERN_DOOR_CX = ROOM_MARGIN_X + ROOM_WIDTH / 2;
+const ROOM9_CAVERN_DOOR_CY = ROOM_MARGIN_Y + ROOM_HEIGHT / 2;
+const ROOM9_CAVERN_DOOR_W = 100;
+const ROOM9_CAVERN_DOOR_H = 140;
+const ROOM9_DOOR_OPEN_DIST = 90;
+const ROOM9_DOOR_SWING_FRAMES = 40;
+const CAVERN_DESCEND_FRAMES = 90;
+const CAVERN_FADE_FRAMES = 35;
 
 let keys = {};
 
@@ -146,7 +171,7 @@ class Player extends Entity {
     this.boundsHalfH = PLAYER_BOUNDS_HALF_HEIGHT;
     this.weapon = WEAPON_FIREBALL;
     this.facingAngle = 0; // radians
-    this.currentRoom = 0;
+    this.currentRoom = 9;
     this.attackCooldown = 0;
     this.swordSwingTimer = 0; // counts down while sword is visually swinging
     this.knockbackRemaining = 0;
@@ -154,6 +179,10 @@ class Player extends Entity {
     this.knockbackNy = 0;
     this.contactDamageCooldown = 0;  // frames until next contact can deal 1 heart (prevents multi-enemy stack from one-shotting)
     this.coins = 0;
+    this.hasShield = false;
+    this.shieldHp = 0;       // 1 = blocks one hit, then shield is gone
+    this.hasBossKey = false;
+    this.inventory = [];     // items from hidden room: 'key', 'potion'
   }
 
   reset(x, y, roomId) {
@@ -170,6 +199,10 @@ class Player extends Entity {
     this.knockbackNy = 0;
     this.contactDamageCooldown = 0;
     this.coins = 0;
+    this.hasShield = false;
+    this.shieldHp = 0;
+    this.hasBossKey = false;
+    this.inventory = [];
   }
 }
 
@@ -415,6 +448,8 @@ const SPAWN_ZONES = new Map([
   [5, [{ x: 220, y: 180, r: SPAWN_ZONE_R }, { x: 400, y: 180, r: SPAWN_ZONE_R }, { x: 240, y: 300, r: SPAWN_ZONE_R }, { x: 380, y: 280, r: SPAWN_ZONE_R }, { x: 300, y: 240, r: SPAWN_ZONE_R }, ...FAR_SIDE_SLOTS_ALL]],
   [6, [{ x: 200, y: 180, r: SPAWN_ZONE_R }, { x: 400, y: 200, r: SPAWN_ZONE_R }, { x: 240, y: 300, r: SPAWN_ZONE_R }, { x: 380, y: 300, r: SPAWN_ZONE_R }, { x: 280, y: 240, r: SPAWN_ZONE_R }, ...FAR_SIDE_SLOTS_ALL]],
   [7, [{ x: 320, y: 240, r: SPAWN_ZONE_R }]], // boss room: only center spawn zone (no blocks)
+  [8, [{ x: 320, y: 240, r: SPAWN_ZONE_R }, { x: 200, y: 140, r: SPAWN_ZONE_R }, { x: 420, y: 160, r: SPAWN_ZONE_R }, { x: 220, y: 320, r: SPAWN_ZONE_R }, { x: 400, y: 300, r: SPAWN_ZONE_R }, ...FAR_SIDE_SLOTS_ALL]],
+  [9, [{ x: 320, y: 240, r: SPAWN_ZONE_R }, { x: 200, y: 140, r: SPAWN_ZONE_R }, { x: 420, y: 160, r: SPAWN_ZONE_R }, { x: 220, y: 320, r: SPAWN_ZONE_R }, { x: 400, y: 300, r: SPAWN_ZONE_R }, ...FAR_SIDE_SLOTS_ALL]],
 ]);
 
 function obstacleOverlapsSpawnZone(roomId, rx, ry, size) {
@@ -528,6 +563,29 @@ function setupRoomObstacles() {
   add(6, 55, 55, 24); add(6, 79, 55, 24); add(6, 103, 55, 24); // corner
   add(6, 537, 425, 24); add(6, 561, 425, 24); add(6, 585, 425, 24); // corner
 
+  // Room 8 – above room 0
+  add(8, 120, 100, 28); add(8, 148, 100, 28); add(8, 176, 100, 28); add(8, 204, 100, 28);
+  add(8, 480, 120, 30); add(8, 510, 120, 30); add(8, 540, 120, 30);
+  add(8, 200, 360, 26); add(8, 226, 360, 26); add(8, 252, 360, 26); add(8, 278, 360, 26);
+  add(8, 400, 320, 28); add(8, 428, 320, 28); add(8, 456, 320, 28); add(8, 484, 320, 28);
+  add(8, 320, 220, 28); add(8, 348, 220, 28); add(8, 376, 220, 28);
+  add(8, 80, 260, 26); add(8, 106, 260, 26); add(8, 132, 260, 26);
+  add(8, 560, 260, 28); add(8, 588, 260, 28);
+  add(8, 55, 55, 24); add(8, 79, 55, 24); add(8, 537, 55, 24); add(8, 561, 55, 24);
+
+  // Room 9 – left of room 8
+  add(9, 120, 100, 28); add(9, 148, 100, 28); add(9, 176, 100, 28);
+  add(9, 480, 140, 30); add(9, 510, 140, 30); add(9, 540, 140, 30);
+  add(9, 180, 340, 26); add(9, 206, 340, 26); add(9, 232, 340, 26);
+  add(9, 420, 320, 30); add(9, 450, 320, 30); add(9, 480, 320, 30);
+  add(9, 300, 200, 28); add(9, 328, 200, 28); add(9, 356, 200, 28);
+  add(9, 80, 260, 26); add(9, 106, 260, 26); add(9, 560, 260, 28);
+  add(9, 55, 55, 24); add(9, 79, 55, 24); add(9, 537, 425, 24); add(9, 561, 425, 24);
+
+  // Room 10 – hidden room (not on minimap); stairs at top center
+  add(10, 120, 200, 28); add(10, 500, 200, 28); add(10, 200, 360, 26); add(10, 440, 360, 26);
+  add(10, 320, 320, 28); add(10, 120, 380, 26); add(10, 520, 380, 26);
+
   // Room 7 = BOSS_ROOM: no blocks
 }
 
@@ -555,6 +613,13 @@ let roomTransition = {
 };
 let cameraOffsetX = 0;
 let cameraOffsetY = 0;
+let sealedDoorCaption = false; // true when player is at a sealed (boss) door
+// Room 9 cavern door: closed -> swinging -> open; then descending sequence to hidden room
+let room9DoorState = "closed"; // 'closed' | 'swinging' | 'open'
+let room9DoorSwingProgress = 0;
+let cavernSequence = "none"; // 'none' | 'descending' | 'fadeout' | 'appearing'
+let cavernProgress = 0;
+let cavernBlackAlpha = 0;
 let victory = false;
 let hasStarted = false; // becomes true after first start
 
@@ -604,13 +669,13 @@ function setupEnemies() {
   enemies.push(new Enemy(ROOM_MARGIN_X + 340, ROOM_MARGIN_Y + 260, 4, true));
   enemies.push(new Enemy(ROOM_MARGIN_X + 420, ROOM_MARGIN_Y + 220, 4, true));
 
-  // Room 5 elites – scattered in a ring around the room
-  enemies.push(new Enemy(ROOM_MARGIN_X + 160, ROOM_MARGIN_Y + 140, 5, true));
-  enemies.push(new Enemy(ROOM_MARGIN_X + 520, ROOM_MARGIN_Y + 140, 5, true));
-  enemies.push(new Enemy(ROOM_MARGIN_X + 160, ROOM_MARGIN_Y + 340, 5, true));
-  enemies.push(new Enemy(ROOM_MARGIN_X + 520, ROOM_MARGIN_Y + 340, 5, true));
-  enemies.push(new Enemy(ROOM_MARGIN_X + 320, ROOM_MARGIN_Y + 120, 5, true));
-  enemies.push(new Enemy(ROOM_MARGIN_X + 320, ROOM_MARGIN_Y + 360, 5, true));
+  // Room 5 elites – kept well away from all three doors (top, left, right)
+  enemies.push(new Enemy(ROOM_MARGIN_X + 260, ROOM_MARGIN_Y + 200, 5, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 380, ROOM_MARGIN_Y + 200, 5, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 260, ROOM_MARGIN_Y + 280, 5, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 380, ROOM_MARGIN_Y + 280, 5, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 320, ROOM_MARGIN_Y + 220, 5, true));
+  enemies.push(new Enemy(ROOM_MARGIN_X + 320, ROOM_MARGIN_Y + 260, 5, true));
 
   // Room 6 elites – similar scattering, with none sitting directly on door lines
   enemies.push(new Enemy(ROOM_MARGIN_X + 160, ROOM_MARGIN_Y + 140, 6, true));
@@ -620,11 +685,13 @@ function setupEnemies() {
   enemies.push(new Enemy(ROOM_MARGIN_X + 320, ROOM_MARGIN_Y + 200, 6, true));
   enemies.push(new Enemy(ROOM_MARGIN_X + 420, ROOM_MARGIN_Y + 280, 6, true));
 
+  // Room 8 and 9: no enemies (player starts in 9)
+
   // Room 7: BOSS only (no regular enemies), center of room, no blocks in this room
   enemies.push(new Boss(ROOM_MARGIN_X + ROOM_WIDTH / 2, ROOM_MARGIN_Y + ROOM_HEIGHT / 2, BOSS_ROOM));
 
-  // Two enemies per room (0–6) drop hearts; two (different) drop golden coins
-  for (let roomId = 0; roomId <= 6; roomId++) {
+  // Two enemies per room (0–6; skip 7 boss, 8 and 9 have no enemies) drop hearts; two (different) drop golden coins
+  for (const roomId of [0, 1, 2, 3, 4, 5, 6]) {
     const inRoom = enemies.filter((e) => e.roomId === roomId && !e.isBoss);
     if (inRoom[0]) inRoom[0].dropsHearts = true;
     if (inRoom[1]) inRoom[1].dropsHearts = true;
@@ -705,7 +772,7 @@ function resetGame() {
   setupEnemies();
   const startX = ROOM_MARGIN_X + 90;
   const startY = ROOM_MARGIN_Y + ROOM_HEIGHT / 2;
-  player.reset(startX, startY, 0);
+  player.reset(startX, startY, 9);
   // Enemies keep their initial positions from setupEnemies (no repositioning) so 5 stay visible per room
   projectiles = [];
   enemyProjectiles = [];
@@ -714,6 +781,12 @@ function resetGame() {
   coinPickups = [];
   isGameOver = false;
   victory = false;
+  room9DoorState = "closed";
+  room9DoorSwingProgress = 0;
+  cavernSequence = "none";
+  cavernProgress = 0;
+  cavernBlackAlpha = 0;
+  shopSold = { shield: false, key: false, potion: false };
   overlayEl.classList.add("hidden");
   updateHUD();
 }
@@ -789,23 +862,52 @@ function drawDeathScatter() {
 }
 
 function updateHUD() {
-  playerHealthValueEl.textContent = player.hp.toString();
-  weaponValueEl.textContent =
-    player.weapon === WEAPON_FIREBALL ? "Fireball" : "Sword";
+  const n = Math.max(0, player.hp);
+  playerHeartsEl.innerHTML = n ? "<span class=\"heart\" aria-hidden=\"true\">♥</span>".repeat(n) : "";
+  playerHeartsEl.setAttribute("aria-label", `Health: ${n} hearts`);
+  if (weaponFireballEl) weaponFireballEl.classList.toggle("active", player.weapon === WEAPON_FIREBALL);
+  if (weaponSwordEl) weaponSwordEl.classList.toggle("active", player.weapon === WEAPON_SWORD);
   const aliveEnemies = enemies.filter((e) => e.hp > 0).length;
   enemiesValueEl.textContent = aliveEnemies.toString();
-  if (coinsValueEl) coinsValueEl.textContent = player.coins.toString();
+  const c = Math.max(0, player.coins);
+  playerCoinsEl.innerHTML = c ? "<span class=\"coin\" aria-hidden=\"true\">●</span>".repeat(c) : "";
+  playerCoinsEl.setAttribute("aria-label", `Coins: ${c}`);
+
+  // Inventory (top right): one slot per item; potions are click-to-use
+  if (inventorySlotsEl) {
+    inventorySlotsEl.innerHTML = player.inventory
+      .map(
+        (item, i) =>
+          `<div class="inv-slot${item === "potion" ? " useable" : ""}" data-item="${item}" data-index="${i}"${item === "potion" ? ' title="Click to use: +5 HP"' : ""}>${item === "key" ? "\uD83D\uDD11" : "\uD83E\uDDEA"}</div>`
+      )
+      .join("");
+  }
 }
+
+// Click-to-use potion from inventory
+if (inventorySlotsEl) {
+  inventorySlotsEl.addEventListener("click", (e) => {
+    const slot = e.target.closest(".inv-slot.useable");
+    if (!slot) return;
+    const idx = parseInt(slot.getAttribute("data-index"), 10);
+    if (isNaN(idx) || !player.inventory || player.inventory[idx] !== "potion") return;
+    player.inventory.splice(idx, 1);
+    player.hp = Math.min(PLAYER_MAX_HP, player.hp + 5);
+    updateHUD();
+  });
+}
+
+const startHintEl = document.getElementById("start-hint");
 
 function showStartScreen() {
   messageTextEl.innerHTML = `
-    <div><strong>Press Spacebar to START</strong></div>
-    <div style="margin-top: 12px;"><strong>How to play</strong></div>
+    <div style="margin-bottom: 8px;"><strong>How to play</strong></div>
     <div>To move, press WASD or ARROW keys.</div>
     <div>To attack, press SPACEBAR.</div>
     <div>To switch weapons, press R.</div>
   `;
   restartButton.textContent = "Start";
+  startHintEl.textContent = "Press SPACEBAR to START";
   overlayEl.classList.remove("hidden");
 }
 
@@ -877,6 +979,13 @@ document.addEventListener("keydown", (e) => {
   if (e.key.toLowerCase() === "r") {
     if (!isGameOver) {
       toggleWeapon();
+    }
+    e.preventDefault();
+  }
+
+  if (e.key.toLowerCase() === "e") {
+    if (!isGameOver && hasStarted && player.currentRoom === HIDDEN_ROOM) {
+      tryPurchaseInSecretRoom();
     }
     e.preventDefault();
   }
@@ -959,6 +1068,7 @@ function performSwordAttack() {
 
 function updatePlayerMovement() {
   if (roomTransition.active) return; // no movement during room slide
+  if (cavernSequence !== "none") return; // no movement during cavern descent/appear
   // Apply knockback first (slower, over multiple frames). Never allow ending inside a block.
   if (player.knockbackRemaining > 0) {
     const move = Math.min(KNOCKBACK_SPEED_PER_FRAME, player.knockbackRemaining);
@@ -1183,8 +1293,69 @@ function updateRoomTransition() {
   }
 }
 
+function updateCavernDoorAndSequence() {
+  const cx = ROOM9_CAVERN_DOOR_CX;
+  const cy = ROOM9_CAVERN_DOOR_CY;
+  const halfW = ROOM9_CAVERN_DOOR_W / 2;
+  const halfH = ROOM9_CAVERN_DOOR_H / 2;
+
+  if (player.currentRoom === 9) {
+    const dist = Math.hypot(player.x - cx, player.y - cy);
+    if (room9DoorState === "closed" && dist < ROOM9_DOOR_OPEN_DIST) {
+      room9DoorState = "swinging";
+      room9DoorSwingProgress = 0;
+    }
+    if (room9DoorState === "swinging") {
+      room9DoorSwingProgress++;
+      if (room9DoorSwingProgress >= ROOM9_DOOR_SWING_FRAMES) {
+        room9DoorState = "open";
+      }
+    }
+    if (room9DoorState === "open" && cavernSequence === "none") {
+      const inDoor =
+        player.x >= cx - halfW &&
+        player.x <= cx + halfW &&
+        player.y >= cy - halfH &&
+        player.y <= cy + halfH;
+      if (inDoor) {
+        cavernSequence = "descending";
+        cavernProgress = 0;
+        player.x = cx;
+      }
+    }
+  }
+
+  if (cavernSequence === "descending") {
+    cavernProgress++;
+    player.y += 2.2;
+    if (cavernProgress >= CAVERN_DESCEND_FRAMES) {
+      cavernSequence = "fadeout";
+      cavernProgress = 0;
+    }
+  } else if (cavernSequence === "fadeout") {
+    cavernProgress++;
+    cavernBlackAlpha = Math.min(1, cavernProgress / CAVERN_FADE_FRAMES);
+    if (cavernProgress >= CAVERN_FADE_FRAMES) {
+      player.currentRoom = HIDDEN_ROOM;
+      player.x = ROOM_MARGIN_X + ROOM_WIDTH / 2;
+      player.y = ROOM_MARGIN_Y + 80;
+      cavernSequence = "appearing";
+      cavernProgress = 0;
+    }
+  } else if (cavernSequence === "appearing") {
+    cavernProgress++;
+    cavernBlackAlpha = Math.max(0, 1 - cavernProgress / CAVERN_FADE_FRAMES);
+    if (cavernProgress >= CAVERN_FADE_FRAMES) {
+      cavernSequence = "none";
+      cavernBlackAlpha = 0;
+    }
+  }
+}
+
 function handleRoomTransitions() {
   if (roomTransition.active) return;
+
+  sealedDoorCaption = false;
 
   const room = ROOMS[player.currentRoom];
   const leftDoorY = ROOM_MARGIN_Y + ROOM_HEIGHT / 2;
@@ -1193,7 +1364,8 @@ function handleRoomTransitions() {
   const bottomDoorX = topDoorX;
   const doorThickness = 60;
 
-  const canEnterBossRoom = (newRoomId) => newRoomId !== BOSS_ROOM || allNonBossEnemiesDead();
+  const canEnterBossRoom = (newRoomId) =>
+    newRoomId !== BOSS_ROOM || allNonBossEnemiesDead() || player.hasBossKey;
 
   if (
     room.neighbors.left !== undefined &&
@@ -1229,6 +1401,16 @@ function handleRoomTransitions() {
     Math.abs(player.x - bottomDoorX) <= doorThickness / 2
   ) {
     startRoomTransition(room.neighbors.down, "down");
+    return;
+  }
+
+  // Check if player is at a sealed door (boss room not yet open)
+  const atLeft = room.neighbors.left === BOSS_ROOM && player.x - player.boundsHalfW <= ROOM_MARGIN_X + 4 && Math.abs(player.y - leftDoorY) <= doorThickness / 2;
+  const atRight = room.neighbors.right === BOSS_ROOM && player.x + player.boundsHalfW >= ROOM_MARGIN_X + ROOM_WIDTH - 4 && Math.abs(player.y - rightDoorY) <= doorThickness / 2;
+  const atTop = room.neighbors.up === BOSS_ROOM && player.y - player.boundsHalfH <= ROOM_MARGIN_Y + 4 && Math.abs(player.x - topDoorX) <= doorThickness / 2;
+  const atBottom = room.neighbors.down === BOSS_ROOM && player.y + player.boundsHalfH >= ROOM_MARGIN_Y + ROOM_HEIGHT - 4 && Math.abs(player.x - bottomDoorX) <= doorThickness / 2;
+  if ((atLeft || atRight || atTop || atBottom) && !allNonBossEnemiesDead() && !player.hasBossKey) {
+    sealedDoorCaption = true;
   }
 }
 
@@ -1436,17 +1618,23 @@ function updateEnemies() {
         roomId: enemy.roomId,
         size: ENEMY_FIREBALL_SIZE,
         damage: ENEMY_FIREBALL_DAMAGE,
+        isDemonFireball: true,
         alive: true,
         get half() { return this.size / 2; },
       });
-      enemy.fireballCooldown = ENEMY_FIREBALL_COOLDOWN;
+      enemy.fireballCooldown = DEMON_FIREBALL_COOLDOWN;
     }
     if (enemy.fireballCooldown > 0) enemy.fireballCooldown--;
 
-    // Damage player on contact and start knockback. Always 1 heart per contact; cooldown prevents stacked enemies from multi-hit.
+    // Damage player on contact and start knockback. Shield absorbs one hit.
     if (rectIntersect(enemy, player)) {
       if (player.contactDamageCooldown <= 0) {
-        player.hp = Math.max(0, player.hp - 1);
+        if (player.hasShield && player.shieldHp > 0) {
+          player.shieldHp--;
+          if (player.shieldHp <= 0) player.hasShield = false;
+        } else {
+          player.hp = Math.max(0, player.hp - 1);
+        }
         player.contactDamageCooldown = 45;  // ~0.75 sec before next contact can damage
       }
 
@@ -1524,20 +1712,25 @@ function updateEnemyProjectiles() {
       p.y - p.half < ROOM_MARGIN_Y ||
       p.y + p.half > ROOM_MARGIN_Y + ROOM_HEIGHT
     ) {
-      if (p.isBoss) spawnBigExplosion(p.x, p.y);
+      if (p.isBoss || p.isDemonFireball) spawnBigExplosion(p.x, p.y);
       p.alive = false;
       return;
     }
     for (const ob of obstacles) {
       if (rectIntersect(p, ob)) {
-        if (p.isBoss) spawnBigExplosion(p.x, p.y);
+        if (p.isBoss || p.isDemonFireball) spawnBigExplosion(p.x, p.y);
         p.alive = false;
         return;
       }
     }
     if (rectIntersect(p, player) && player.currentRoom === p.roomId) {
-      player.hp = Math.max(0, player.hp - 1);  // always 1 heart per enemy fireball hit
-      if (p.isBoss) spawnBigExplosion(p.x, p.y);
+      if (player.hasShield && player.shieldHp > 0) {
+        player.shieldHp--;
+        if (player.shieldHp <= 0) player.hasShield = false;
+      } else {
+        player.hp = Math.max(0, player.hp - 1);
+      }
+      if (p.isBoss || p.isDemonFireball) spawnBigExplosion(p.x, p.y);
       p.alive = false;
       if (player.hp <= 0) {
         isGameOver = true;
@@ -1554,7 +1747,7 @@ function updateHeartPickups() {
     if (h.roomId !== player.currentRoom) return true;
     const dx = player.x - h.x, dy = player.y - h.y;
     if (Math.hypot(dx, dy) < player.boundsHalfW + HEART_PICKUP_R) {
-      player.hp = Math.min(PLAYER_MAX_HP, player.hp + 1);
+      player.hp += 1;
       updateHUD();
       return false; // remove heart
     }
@@ -1589,6 +1782,7 @@ function showEndMessage() {
     ? "You defeated all the demons and the Boss!"
     : "You lose";
   restartButton.textContent = "Restart";
+  startHintEl.textContent = "";
   overlayEl.classList.remove("hidden");
 }
 
@@ -1647,6 +1841,232 @@ function drawObstacles() {
   obstacles.forEach((ob) => {
     ctx.fillRect(ob.x - ob.half, ob.y - ob.half, ob.size, ob.size);
   });
+}
+
+function drawRoom9CavernDoor() {
+  const cx = ROOM9_CAVERN_DOOR_CX;
+  const cy = ROOM9_CAVERN_DOOR_CY;
+  const w = ROOM9_CAVERN_DOOR_W;
+  const h = ROOM9_CAVERN_DOOR_H;
+  const left = cx - w / 2;
+  const top = cy - h / 2;
+
+  // Dark arch / frame (cavern mouth)
+  ctx.fillStyle = "#1a1a22";
+  ctx.beginPath();
+  ctx.moveTo(left, top + h);
+  ctx.lineTo(left, top + 25);
+  ctx.quadraticCurveTo(left, top, left + w / 2, top);
+  ctx.quadraticCurveTo(left + w, top, left + w, top + 25);
+  ctx.lineTo(left + w, top + h);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = "#3d3d4a";
+  ctx.lineWidth = 4;
+  ctx.stroke();
+
+  // Door panel slides open to the right
+  const slideT = room9DoorState === "swinging"
+    ? room9DoorSwingProgress / ROOM9_DOOR_SWING_FRAMES
+    : room9DoorState === "open"
+      ? 1
+      : 0;
+  const panelW = w - 8;
+  const slideX = slideT * panelW;
+
+  if (slideT < 1) {
+    ctx.fillStyle = "#2d2d38";
+    ctx.fillRect(left + slideX, top + 20, panelW, h - 25);
+    ctx.strokeStyle = "#4a4a5a";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(left + slideX, top + 20, panelW, h - 25);
+  }
+}
+
+function drawCavernSteps() {
+  const cx = ROOM9_CAVERN_DOOR_CX;
+  const cy = ROOM9_CAVERN_DOOR_CY;
+  const stepW = 90;
+  const stepH = 10;
+  const numSteps = 12;
+  const startY = cy + ROOM9_CAVERN_DOOR_H / 2;
+  ctx.fillStyle = "#3d3d4a";
+  for (let i = 0; i < numSteps; i++) {
+    const y = startY + i * (stepH + 4);
+    const x = cx - stepW / 2 + (i % 2) * 8;
+    ctx.fillRect(x, y, stepW, stepH);
+  }
+}
+
+function tryPurchaseInSecretRoom() {
+  SHOP_ITEMS.forEach((item) => {
+    if (shopSold[item.id]) return;
+    const ix = SHOP_CENTER_X + item.offsetX;
+    const iy = SHOP_CENTER_Y + item.offsetY;
+    const dist = Math.hypot(player.x - ix, player.y - iy);
+    if (dist > SHOP_ITEM_R) return;
+    if (player.coins < item.price) return;
+
+    player.coins -= item.price;
+    shopSold[item.id] = true;
+
+    if (item.id === "shield") {
+      player.hasShield = true;
+      player.shieldHp = 1;
+      // Shield is equipped, not in inventory; drawn in front of player
+    } else if (item.id === "key") {
+      player.hasBossKey = true;
+      player.inventory.push("key");
+    } else if (item.id === "potion") {
+      player.inventory.push("potion");
+      // Use from inventory to add 5 health
+    }
+    updateHUD();
+  });
+}
+
+function drawSecretRoomShop() {
+  const cx = SHOP_CENTER_X;
+  const cy = SHOP_CENTER_Y;
+  const slotR = 28;
+  const items = [
+    { id: "shield", offsetX: -SHOP_ITEM_SPACING },
+    { id: "key", offsetX: 0 },
+    { id: "potion", offsetX: SHOP_ITEM_SPACING },
+  ];
+  // Stand / table
+  ctx.fillStyle = "#3e2723";
+  ctx.fillRect(cx - 150, cy - 10, 300, 24);
+  ctx.strokeStyle = "#5d4037";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(cx - 150, cy - 10, 300, 24);
+
+  items.forEach(({ id, offsetX }) => {
+    const x = cx + offsetX;
+    const y = cy;
+    const sold = shopSold[id];
+    const item = SHOP_ITEMS.find((i) => i.id === id);
+
+    // Slot circle
+    ctx.fillStyle = sold ? "#2d2d2d" : "#1a1a22";
+    ctx.beginPath();
+    ctx.arc(x, y, slotR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = sold ? "#444" : "#5d4e37";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    if (id === "shield") {
+      // Brown pentagon with two longer (side) edges — flipped upside down
+      ctx.fillStyle = sold ? "#4a3728" : "#6d4c41";
+      ctx.strokeStyle = sold ? "#3e2723" : "#5d4037";
+      ctx.lineWidth = 2;
+      const top = y - 22;
+      const bottom = y + 22;
+      const upperSide = 12;
+      const lowerSide = 15;
+      ctx.beginPath();
+      ctx.moveTo(x, bottom);                    // point at bottom
+      ctx.lineTo(x + upperSide, y + 6);        // right shoulder
+      ctx.lineTo(x + lowerSide, top + 3);      // long edge to upper-right corner
+      ctx.lineTo(x, top);                      // point at top
+      ctx.lineTo(x - lowerSide, top + 3);      // long edge to upper-left corner
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    } else if (id === "key") {
+      // Old-fashioned key with loop (circular bow) and bit
+      ctx.fillStyle = sold ? "#555" : "#b8860b";
+      ctx.strokeStyle = sold ? "#333" : "#8b6914";
+      ctx.lineWidth = 1.5;
+      const kx = x;
+      const ky = y;
+      // Loop (bow) at top - circle
+      ctx.beginPath();
+      ctx.arc(kx, ky - 14, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // Inner circle of loop (hole)
+      ctx.fillStyle = "#1a1a22";
+      ctx.beginPath();
+      ctx.arc(kx, ky - 14, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = sold ? "#555" : "#b8860b";
+      // Stem (shank) from loop down to bit
+      ctx.fillRect(kx - 3, ky - 14, 6, 20);
+      ctx.strokeRect(kx - 3, ky - 14, 6, 20);
+      // Bit (teeth) at bottom - old-fashioned L or two teeth
+      ctx.fillRect(kx - 3, ky + 4, 6, 6);
+      ctx.fillRect(kx - 3, ky + 8, 12, 4);
+      ctx.strokeRect(kx - 3, ky + 4, 6, 6);
+      ctx.strokeRect(kx - 3, ky + 8, 12, 4);
+    } else if (id === "potion") {
+      // Lab flask (Erlenmeyer): conical body, narrow neck, red liquid inside
+      const flTop = y - 14;
+      const flNeckBottom = y - 4;
+      const flBaseTop = y + 4;
+      const flBaseBottom = y + 14;
+      const neckW = 6;
+      const baseW = 22;
+      // Flask outline: neck (small rect), then cone body
+      ctx.strokeStyle = sold ? "#444" : "#607d8b";
+      ctx.lineWidth = 1.5;
+      ctx.fillStyle = sold ? "rgba(60,60,80,0.3)" : "rgba(200,220,240,0.25)";
+      ctx.beginPath();
+      ctx.moveTo(x - neckW / 2, flTop);
+      ctx.lineTo(x + neckW / 2, flTop);
+      ctx.lineTo(x + neckW / 2, flNeckBottom);
+      ctx.lineTo(x + baseW / 2, flBaseTop);
+      ctx.lineTo(x + baseW / 2 - 2, flBaseBottom);
+      ctx.lineTo(x, flBaseBottom + 2);
+      ctx.lineTo(x - baseW / 2 + 2, flBaseBottom);
+      ctx.lineTo(x - baseW / 2, flBaseTop);
+      ctx.lineTo(x - neckW / 2, flNeckBottom);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      // Red liquid inside: flat surface at liquidTop, fills conical body
+      const liquidTop = y + 6;
+      const t = (liquidTop - flBaseTop) / (flBaseBottom - flBaseTop);
+      const liquidHalfW = baseW / 2 - 2 + t * 2; // cone width at liquid surface
+      ctx.fillStyle = sold ? "#4a2020" : "#c62828";
+      ctx.beginPath();
+      ctx.moveTo(x - liquidHalfW, liquidTop);
+      ctx.lineTo(x + liquidHalfW, liquidTop);
+      ctx.lineTo(x + baseW / 2 - 2, flBaseBottom);
+      ctx.lineTo(x, flBaseBottom + 2);
+      ctx.lineTo(x - baseW / 2 + 2, flBaseBottom);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = sold ? "#5a2020" : "#b71c1c";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = sold ? "#666" : "#cfd8dc";
+    ctx.font = "14px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    if (sold) {
+      ctx.fillText("SOLD", x, y + slotR + 12);
+    } else {
+      ctx.fillText(String(item.price) + " coins", x, y + slotR + 12);
+    }
+  });
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
 }
 
 function drawPlayer() {
@@ -1735,6 +2155,31 @@ function drawPlayer() {
   }
 }
 
+function drawPlayerShield() {
+  if (!player.hasShield || player.shieldHp <= 0) return;
+  const dx = Math.cos(player.facingAngle) * 28;
+  const dy = Math.sin(player.facingAngle) * 28;
+  const x = player.x + dx;
+  const y = player.y + dy;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(player.facingAngle);
+  // Brown pentagon: point toward player (negative x), flat part forward (positive x)
+  ctx.fillStyle = "#6d4c41";
+  ctx.strokeStyle = "#5d4037";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(-10, 0);   // point (toward player)
+  ctx.lineTo(0, 5);    // right shoulder
+  ctx.lineTo(8, 2);    // right corner
+  ctx.lineTo(8, -2);   // front
+  ctx.lineTo(0, -5);   // left shoulder
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawEnemies() {
   enemies.forEach((enemy) => {
     if (enemy.roomId !== player.currentRoom || enemy.hp <= 0) return;
@@ -1742,15 +2187,26 @@ function drawEnemies() {
   });
 }
 
+function drawHeartShape(x, y, r) {
+  // Heart path: symmetric with two lobes and pointed bottom (r = approximate radius)
+  ctx.beginPath();
+  const top = y - r * 0.5;
+  ctx.moveTo(x, y + r * 0.35);
+  ctx.bezierCurveTo(x - r, y - r * 0.4, x - r * 0.6, top - r * 0.3, x, top);
+  ctx.bezierCurveTo(x + r * 0.6, top - r * 0.3, x + r, y - r * 0.4, x, y + r * 0.35);
+  ctx.closePath();
+}
+
 function drawHeartPickups() {
+  const r = HEART_PICKUP_R - 2;
   heartPickups.forEach((h) => {
     if (h.roomId !== player.currentRoom) return;
     ctx.fillStyle = "#c62828";
-    ctx.beginPath();
-    ctx.arc(h.x, h.y, HEART_PICKUP_R - 2, 0, Math.PI * 2);
+    drawHeartShape(h.x, h.y, r);
     ctx.fill();
     ctx.strokeStyle = "#8b0000";
     ctx.lineWidth = 2;
+    drawHeartShape(h.x, h.y, r);
     ctx.stroke();
   });
 }
@@ -1819,6 +2275,49 @@ function drawEnemyProjectiles() {
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.half, 0, Math.PI * 2);
       ctx.fill();
+    } else if (p.isDemonFireball) {
+      // Demon room fireball: red core, yellow comet tail
+      const speed = Math.hypot(p.vx, p.vy) || 1;
+      const dirX = p.vx / speed;
+      const dirY = p.vy / speed;
+
+      const tailLength = p.size * 3;
+      const tailStartX = p.x - dirX * p.half;
+      const tailStartY = p.y - dirY * p.half;
+      const tailEndX = tailStartX - dirX * tailLength;
+      const tailEndY = tailStartY - dirY * tailLength;
+
+      const tailGradient = ctx.createLinearGradient(
+        tailStartX,
+        tailStartY,
+        tailEndX,
+        tailEndY
+      );
+      tailGradient.addColorStop(0, "rgba(255, 235, 59, 0.9)");  // yellow near core
+      tailGradient.addColorStop(1, "rgba(255, 152, 0, 0)");     // fade out
+
+      ctx.strokeStyle = tailGradient;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(tailStartX, tailStartY);
+      ctx.lineTo(tailEndX, tailEndY);
+      ctx.stroke();
+
+      const radial = ctx.createRadialGradient(
+        p.x,
+        p.y,
+        p.half * 0.2,
+        p.x,
+        p.y,
+        p.half
+      );
+      radial.addColorStop(0, "#b71c1c");  // red core
+      radial.addColorStop(1, "#e53935");  // slightly lighter red edge
+
+      ctx.fillStyle = radial;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.half, 0, Math.PI * 2);
+      ctx.fill();
     } else {
       ctx.fillStyle = "#b71c1c";
       ctx.beginPath();
@@ -1844,10 +2343,144 @@ function drawUIHints() {
     ROOM_MARGIN_X + 12,
     ROOM_MARGIN_Y + ROOM_HEIGHT - 12
   );
+  if (player.currentRoom === HIDDEN_ROOM) {
+    ctx.textAlign = "center";
+    ctx.fillText("Press E near an item to purchase", SHOP_CENTER_X, ROOM_MARGIN_Y + 24);
+  }
+}
+
+function drawSealedDoorCaption() {
+  if (!sealedDoorCaption) return;
+
+  ctx.font = "14px sans-serif";
+  ctx.textAlign = "center";
+  const lines = ["Defeat all enemies to enter this room...", "or perhaps buy a key"];
+  const lineHeight = 18;
+  const padding = 12;
+  const maxW = Math.max(...lines.map((l) => ctx.measureText(l).width));
+  const bubbleW = maxW + padding * 2;
+  const bubbleH = lines.length * lineHeight + padding * 2;
+
+  const bx = ROOM_MARGIN_X + ROOM_WIDTH / 2;
+  const by = ROOM_MARGIN_Y + ROOM_HEIGHT / 2 - bubbleH / 2;
+
+  const r = 8;
+  const x = bx - bubbleW / 2;
+  ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+  ctx.strokeStyle = "#78909c";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x + r, by);
+  ctx.lineTo(x + bubbleW - r, by);
+  ctx.arcTo(x + bubbleW, by, x + bubbleW, by + r, r);
+  ctx.lineTo(x + bubbleW, by + bubbleH - r);
+  ctx.arcTo(x + bubbleW, by + bubbleH, x + bubbleW - r, by + bubbleH, r);
+  ctx.lineTo(x + r, by + bubbleH);
+  ctx.arcTo(x, by + bubbleH, x, by + bubbleH - r, r);
+  ctx.lineTo(x, by + r);
+  ctx.arcTo(x, by, x + r, by, r);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = "#263238";
+  lines.forEach((line, i) => {
+    ctx.fillText(line, bx, by + padding + (i + 1) * lineHeight - 4);
+  });
+}
+
+// Overhead minimap: row0 [9][8], row1 [0,1,2,3], row2 [4,5,6,7]. Drawn in screen space (left panel).
+const MINIMAP_GRID = [
+  [9, 8, null, null],  // row 0
+  [0, 1, 2, 3],       // row 1
+  [4, 5, 6, 7],       // row 2
+];
+
+function drawMinimap() {
+  const pad = 10;
+  const mapH = 96;
+  const cols = 4;
+  const rows = 3;
+  // Use 5 column-widths so row 0 (shifted left by 1 cell) still fits inside the panel
+  const cellW = (MINIMAP_PANEL_WIDTH - pad * 2) / 5;
+  const cellH = mapH / rows;
+  const left = pad + cellW; // origin so shifted row 0 stays on screen (room 9 at pad, room 8 at pad+cellW)
+  const top = (canvas.height - mapH) / 2 - 20;
+  const doorGap = Math.max(4, Math.min(cellW, cellH) * 0.4);
+
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const roomId = MINIMAP_GRID[row][col];
+      if (roomId === null) continue;
+
+      // Row 0 (rooms 9 and 8) shifted left by one cell so room 8 sits above room 0
+      const colOffset = row === 0 ? -1 : 0;
+      const x = left + (col + colOffset) * cellW;
+      const y = top + row * cellH;
+      const isCurrent = player.currentRoom === roomId;
+
+      ctx.fillStyle = isCurrent ? "#4a5568" : "#2d3748";
+      ctx.fillRect(x + 1, y + 1, cellW - 1, cellH - 1);
+
+      ctx.strokeStyle = isCurrent ? "#a0aec0" : "#4a5568";
+      ctx.lineWidth = 1;
+      const room = ROOMS[roomId];
+      // Draw border with gaps for doors
+      ctx.beginPath();
+      // Top edge (door if room has neighbor up)
+      if (room.neighbors.up === undefined) {
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + cellW, y);
+      } else {
+        const gap = doorGap / 2;
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + cellW / 2 - gap, y);
+        ctx.moveTo(x + cellW / 2 + gap, y);
+        ctx.lineTo(x + cellW, y);
+      }
+      // Right edge
+      if (room.neighbors.right === undefined) {
+        ctx.lineTo(x + cellW, y + cellH);
+      } else {
+        const gap = doorGap / 2;
+        ctx.lineTo(x + cellW, y + cellH / 2 - gap);
+        ctx.moveTo(x + cellW, y + cellH / 2 + gap);
+        ctx.lineTo(x + cellW, y + cellH);
+      }
+      // Bottom edge
+      if (room.neighbors.down === undefined) {
+        ctx.lineTo(x, y + cellH);
+      } else {
+        const gap = doorGap / 2;
+        ctx.lineTo(x + cellW / 2 + gap, y + cellH);
+        ctx.moveTo(x + cellW / 2 - gap, y + cellH);
+        ctx.lineTo(x, y + cellH);
+      }
+      // Left edge
+      if (room.neighbors.left === undefined) {
+        ctx.lineTo(x, y);
+      } else {
+        const gap = doorGap / 2;
+        ctx.lineTo(x, y + cellH / 2 + gap);
+        ctx.moveTo(x, y + cellH / 2 - gap);
+        ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // Room number centered in cell
+      ctx.fillStyle = isCurrent ? "#e2e8f0" : "#a0aec0";
+      ctx.font = "12px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(roomId), x + cellW / 2, y + cellH / 2);
+    }
+  }
 }
 
 function gameLoop() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  drawMinimap();
 
   if (!isGameOver && hasStarted) {
     if (player.attackCooldown > 0) player.attackCooldown--;
@@ -1875,12 +2508,16 @@ function gameLoop() {
     updateDeathScatter();
     checkWinCondition();
     updateRoomTransition();
+    updateCavernDoorAndSequence();
   }
 
   ctx.save();
   ctx.translate(cameraOffsetX, cameraOffsetY);
   drawRoomBackground();
   drawObstacles();
+  if (player.currentRoom === 9) drawRoom9CavernDoor();
+  if (cavernSequence === "descending") drawCavernSteps();
+  if (player.currentRoom === HIDDEN_ROOM) drawSecretRoomShop();
   drawEnemies();
   drawHeartPickups();
   drawCoinPickups();
@@ -1889,8 +2526,15 @@ function gameLoop() {
   drawProjectiles();
   drawExplosions();
   drawPlayer();
+  drawPlayerShield();
+  drawSealedDoorCaption();
   drawUIHints();
   ctx.restore();
+
+  if (cavernBlackAlpha > 0) {
+    ctx.fillStyle = `rgba(0,0,0,${cavernBlackAlpha})`;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
 
   updateHUD();
 
