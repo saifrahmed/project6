@@ -17,6 +17,8 @@ const fireballWhooshEl = document.getElementById("fireball-whoosh");
 const coinCollectEl = document.getElementById("coin-collect");
 const itemEquipEl = document.getElementById("item-equip");
 const heartPickupEl = document.getElementById("heart-pickup");
+const bossChamberEl = document.getElementById("boss-chamber");
+const secretDoorOpenEl = document.getElementById("secret-door-open");
 const ROOM_WIDTH = 640;
 const ROOM_HEIGHT = 480;
 const MINIMAP_PANEL_WIDTH = 140;
@@ -677,7 +679,7 @@ let sealedDoorCaption = false; // true when player is at a sealed (boss) door
 // Room 9 cavern door: closed -> swinging -> open; then descending sequence to hidden room
 let room9DoorState = "closed"; // 'closed' | 'swinging' | 'open'
 let room9DoorSwingProgress = 0;
-let cavernSequence = "none"; // 'none' | 'descending' | 'fadeout' | 'appearing'
+let cavernSequence = "none"; // 'none' | 'descending' | 'fadeout' | 'appearing' | 'ascending'
 let cavernProgress = 0;
 let cavernBlackAlpha = 0;
 let victory = false;
@@ -1355,6 +1357,10 @@ function updateRoomTransition() {
       t.progress = 0;
       t.phase = 2;
       player.currentRoom = t.toRoom;
+      if (t.toRoom === BOSS_ROOM && bossChamberEl) {
+        bossChamberEl.currentTime = 0;
+        bossChamberEl.play().catch(() => {});
+      }
       // Reset remaining enemies in this room back to their original spawn points
       enemies.forEach((e) => {
         if (e.roomId === t.toRoom && e.hp > 0 && e.spawnX !== undefined) {
@@ -1446,6 +1452,10 @@ function updateCavernDoorAndSequence() {
         cavernSequence = "descending";
         cavernProgress = 0;
         player.x = cx;
+        if (secretDoorOpenEl) {
+          secretDoorOpenEl.currentTime = 0;
+          secretDoorOpenEl.play().catch(() => {});
+        }
       }
     }
   }
@@ -1460,7 +1470,7 @@ function updateCavernDoorAndSequence() {
   } else if (cavernSequence === "fadeout") {
     cavernProgress++;
     cavernBlackAlpha = Math.min(1, cavernProgress / CAVERN_FADE_FRAMES);
-    if (cavernProgress >= CAVERN_FADE_FRAMES) {
+      if (cavernProgress >= CAVERN_FADE_FRAMES) {
       player.currentRoom = HIDDEN_ROOM;
       player.x = ROOM_MARGIN_X + ROOM_WIDTH / 2;
       player.y = ROOM_MARGIN_Y + 80;
@@ -1483,6 +1493,14 @@ function updateCavernDoorAndSequence() {
     if (cavernProgress >= CAVERN_FADE_FRAMES) {
       cavernSequence = "none";
       cavernBlackAlpha = 0;
+    }
+  } else if (cavernSequence === "ascending") {
+    cavernProgress++;
+    player.y -= 2.2;
+    if (cavernProgress >= CAVERN_DESCEND_FRAMES) {
+      cavernSequence = "none";
+      player.x = ROOM9_CAVERN_DOOR_CX + ROOM9_CAVERN_DOOR_W / 2 + 28;
+      player.y = ROOM9_CAVERN_DOOR_CY;
     }
   }
 }
@@ -1526,7 +1544,20 @@ function handleRoomTransitions() {
     player.y - player.boundsHalfH <= ROOM_MARGIN_Y + 4 &&
     Math.abs(player.x - topDoorX) <= doorThickness / 2
   ) {
-    startRoomTransition(room.neighbors.up, "up");
+    if (player.currentRoom === HIDDEN_ROOM && room.neighbors.up === 9) {
+      cavernSequence = "ascending";
+      cavernProgress = 0;
+      player.currentRoom = 9;
+      player.x = ROOM9_CAVERN_DOOR_CX;
+      const stepsBottomY = ROOM9_CAVERN_DOOR_CY + ROOM9_CAVERN_DOOR_H / 2 + 12 * 14;
+      player.y = stepsBottomY;
+      if (secretDoorOpenEl) {
+        secretDoorOpenEl.currentTime = 0;
+        secretDoorOpenEl.play().catch(() => {});
+      }
+    } else {
+      startRoomTransition(room.neighbors.up, "up");
+    }
     return;
   }
   if (
@@ -2811,7 +2842,7 @@ function gameLoop() {
   drawRoomBackground();
   drawObstacles();
   if (player.currentRoom === 9) drawRoom9CavernDoor();
-  if (cavernSequence === "descending") drawCavernSteps();
+  if (cavernSequence === "descending" || cavernSequence === "ascending" || (player.currentRoom === 9 && room9DoorState === "open")) drawCavernSteps();
   if (player.currentRoom === HIDDEN_ROOM) {
     drawShopkeeper();
     drawShopkeeperCaption();
